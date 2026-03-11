@@ -16,7 +16,7 @@ Good code is like nonna's cooking: made with intention, distinct, recognisable ð
 
 ![nonna demo screenshot](screenshot.png)
 
-<sub>100% match between `KexGSSGex._generate_x` and `KexGex._generate_x` in paramiko. Identical crypto key generation logic, two different class names.</sub>
+*100% match between `KexGSSGex._generate_x` and `KexGex._generate_x` in paramiko. Identical crypto key generation logic, two different class names.*
 
 ## What it does
 
