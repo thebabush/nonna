@@ -1,0 +1,921 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>nonna — code slop detector</title>
+<style>
+  :root {
+    --bg: #0d1117; --bg2: #161b22; --bg3: #21262d; --border: #30363d;
+    --fg: #c9d1d9; --fg2: #8b949e; --accent: #58a6ff; --green: #3fb950;
+    --yellow: #d29922; --red: #f85149; --purple: #bc8cff; --orange: #e3b341;
+    --font: 'SF Mono', 'Cascadia Code', 'Fira Code', monospace;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--fg); font-family: -apple-system, system-ui, sans-serif; font-size: 14px; }
+
+  /* Layout */
+  #app { display: flex; flex-direction: column; height: 100vh; }
+  header { background: var(--bg2); border-bottom: 1px solid var(--border); padding: 10px 20px; display: flex; align-items: center; gap: 16px; flex-shrink: 0; flex-wrap: wrap; }
+  header h1 { font-size: 18px; font-weight: 600; color: var(--accent); cursor: pointer; white-space: nowrap; }
+  header .tagline { font-size: 12px; color: var(--fg2); white-space: nowrap; }
+  header .stats { color: var(--fg2); font-size: 12px; flex: 1; min-width: 0; }
+  header .stats b { color: var(--fg); }
+  #search-box { background: var(--bg3); border: 1px solid var(--border); color: var(--fg); padding: 6px 12px; border-radius: 6px; width: 220px; font-size: 13px; outline: none; }
+  #search-box:focus { border-color: var(--accent); }
+  #search-box::placeholder { color: var(--fg2); }
+
+  /* Upload button */
+  .upload-btn { background: var(--bg3); border: 1px solid var(--border); color: var(--fg); padding: 6px 14px; border-radius: 6px; font-size: 13px; cursor: pointer; white-space: nowrap; transition: border-color 0.15s, background 0.15s; }
+  .upload-btn:hover { border-color: var(--accent); background: var(--bg); }
+  .upload-btn.has-upload { border-color: var(--orange); color: var(--orange); }
+  #upload-input { display: none; }
+
+  /* Upload drop overlay */
+  #drop-overlay { display: none; position: fixed; inset: 0; background: rgba(13,17,23,0.85); z-index: 100; align-items: center; justify-content: center; flex-direction: column; gap: 12px; border: 3px dashed var(--accent); }
+  #drop-overlay.active { display: flex; }
+  #drop-overlay p { color: var(--accent); font-size: 20px; font-weight: 600; }
+  #drop-overlay small { color: var(--fg2); font-size: 13px; }
+
+  /* Upload progress toast */
+  #upload-toast { display: none; position: fixed; bottom: 24px; right: 24px; background: var(--bg2); border: 1px solid var(--border); border-radius: 8px; padding: 12px 18px; font-size: 13px; z-index: 200; box-shadow: 0 4px 20px rgba(0,0,0,0.4); min-width: 240px; }
+  #upload-toast.visible { display: block; }
+  #upload-toast .toast-title { font-weight: 600; margin-bottom: 4px; }
+  #upload-toast .toast-body { color: var(--fg2); }
+  #upload-toast .toast-ok { color: var(--green); }
+  #upload-toast .toast-err { color: var(--red); }
+  .uploaded-badge { display: inline-block; padding: 1px 6px; border-radius: 4px; font-size: 10px; font-weight: 600; background: var(--orange)22; color: var(--orange); font-family: var(--font); margin-left: 4px; }
+
+  main { display: flex; flex: 1; overflow: hidden; }
+
+  /* Sidebar */
+  #sidebar { width: 340px; border-right: 1px solid var(--border); display: flex; flex-direction: column; flex-shrink: 0; background: var(--bg2); }
+  .sidebar-tabs { display: flex; border-bottom: 1px solid var(--border); }
+  .sidebar-tabs button { flex: 1; padding: 8px; background: none; border: none; color: var(--fg2); cursor: pointer; font-size: 13px; border-bottom: 2px solid transparent; }
+  .sidebar-tabs button.active { color: var(--accent); border-bottom-color: var(--accent); }
+  .sidebar-tabs button:hover { color: var(--fg); }
+  #sidebar-content { flex: 1; overflow-y: auto; }
+
+  /* Pair list */
+  .pair-item { padding: 10px 14px; border-bottom: 1px solid var(--border); cursor: pointer; transition: background 0.1s; }
+  .pair-item:hover { background: var(--bg3); }
+  .pair-item.selected { background: var(--bg3); border-left: 3px solid var(--accent); }
+  .pair-sim { font-size: 13px; font-weight: 600; margin-bottom: 4px; }
+  .pair-funcs { font-size: 12px; color: var(--fg2); line-height: 1.5; }
+  .pair-funcs .fname { color: var(--fg); font-family: var(--font); }
+  .pair-funcs .ffile { color: var(--fg2); font-size: 11px; }
+  .sim-bar { display: inline-block; height: 4px; border-radius: 2px; margin-right: 6px; vertical-align: middle; }
+
+  /* Filters */
+  .filter-row { padding: 6px 14px; border-bottom: 1px solid var(--border); display: flex; gap: 8px; align-items: center; }
+  .filter-row label { font-size: 12px; color: var(--fg2); white-space: nowrap; min-width: 72px; }
+  .filter-row input, .filter-row select { background: var(--bg); border: 1px solid var(--border); color: var(--fg); padding: 4px 8px; border-radius: 4px; font-size: 12px; }
+  .filter-row input[type=range] { flex: 1; }
+  .filter-section { padding: 6px 14px; border-bottom: 1px solid var(--border); }
+  .filter-section summary { font-size: 12px; color: var(--fg2); cursor: pointer; user-select: none; }
+  .weight-row { display: flex; gap: 6px; align-items: center; padding: 3px 0; }
+  .weight-row label { font-size: 11px; color: var(--fg2); width: 80px; font-family: var(--font); }
+  .weight-row input[type=range] { flex: 1; height: 4px; }
+  .weight-row .wval { font-size: 11px; color: var(--fg); font-family: var(--font); width: 28px; text-align: right; }
+
+  /* Package list */
+  .pkg-item { padding: 8px 14px; border-bottom: 1px solid var(--border); cursor: pointer; }
+  .pkg-item:hover { background: var(--bg3); }
+  .pkg-name { font-weight: 600; font-size: 13px; }
+  .pkg-stats { font-size: 11px; color: var(--fg2); margin-top: 2px; }
+
+  /* Search results */
+  .search-item { padding: 8px 14px; border-bottom: 1px solid var(--border); cursor: pointer; }
+  .search-item:hover { background: var(--bg3); }
+
+  /* Detail panel */
+  #detail { flex: 1; overflow-y: auto; padding: 0; display: flex; flex-direction: column; }
+  .detail-header { padding: 16px 20px; background: var(--bg2); border-bottom: 1px solid var(--border); flex-shrink: 0; }
+  .detail-header h2 { font-size: 16px; margin-bottom: 6px; }
+  .detail-header .meta { font-size: 12px; color: var(--fg2); }
+  .sim-badge { display: inline-block; padding: 2px 10px; border-radius: 10px; font-weight: 600; font-size: 14px; margin-left: 8px; }
+
+  /* Feature breakdown */
+  .feature-bar { display: flex; height: 24px; border-radius: 4px; overflow: hidden; margin: 12px 20px; gap: 1px; }
+  .feature-bar .shared { background: var(--green); }
+  .feature-bar .only-a { background: var(--red); }
+  .feature-bar .only-b { background: var(--yellow); }
+  .feature-legend { display: flex; gap: 16px; padding: 0 20px 12px; font-size: 12px; color: var(--fg2); }
+  .feature-legend span::before { content: ''; display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 4px; vertical-align: middle; }
+  .feature-legend .lg::before { background: var(--green); }
+  .feature-legend .la::before { background: var(--red); }
+  .feature-legend .lb::before { background: var(--yellow); }
+
+  pre.source { flex: 1; overflow: auto; padding: 12px 14px; margin: 0; font-family: var(--font); font-size: 13px; line-height: 1.6; background: var(--bg); tab-size: 4; white-space: pre; }
+
+  /* Single function view */
+  .func-detail { padding: 20px; }
+  .match-item { padding: 6px 10px; border: 1px solid var(--border); border-radius: 4px; margin-bottom: 4px; cursor: pointer; display: flex; align-items: center; gap: 10px; }
+  .match-item:hover { border-color: var(--accent); background: var(--bg3); }
+  .match-sim { font-weight: 600; font-family: var(--font); width: 50px; }
+  .match-name { font-family: var(--font); color: var(--accent); }
+  .match-file { color: var(--fg2); font-size: 12px; }
+
+  /* Diff */
+  .diff-table-wrap { display: flex; flex-direction: column; flex: 1; overflow: hidden; }
+  .diff-pane-headers { display: flex; flex-shrink: 0; border-bottom: 1px solid var(--border); align-items: stretch; }
+  .diff-pane-hdr { flex: 1; padding: 8px 14px; background: var(--bg2); font-size: 12px; color: var(--fg2); }
+  .diff-pane-hdr.left { border-right: 1px solid var(--border); }
+  .diff-pane-hdr .pane-name { color: var(--accent); font-family: var(--font); }
+  .diff-pane-hdr.right .pane-name { color: var(--purple); }
+  .diff-mode-btn { background: var(--bg3); border: 1px solid var(--border); color: var(--fg2); padding: 4px 10px; border-radius: 4px; font-size: 11px; cursor: pointer; white-space: nowrap; align-self: center; margin-right: 8px; }
+  .diff-mode-btn:hover { border-color: var(--accent); color: var(--fg); }
+  .diff-scroll { flex: 1; overflow: auto; }
+
+  /* Split diff */
+  .diff-tbl { width: 100%; border-collapse: collapse; font-family: var(--font); font-size: 13px; line-height: 1.5; }
+  .diff-tbl td { padding: 0 8px; white-space: pre; vertical-align: top; }
+  .diff-tbl td.lno { width: 32px; text-align: right; color: var(--fg2); opacity: 0.4; user-select: none; padding-right: 10px; }
+  .diff-tbl td.code { width: 50%; }
+  .diff-tbl td.sep { width: 1px; background: var(--border); padding: 0; }
+  .diff-tbl tr.delete td.code.left { background: rgba(248,81,73,0.12); }
+  .diff-tbl tr.insert td.code.right { background: rgba(63,185,80,0.12); }
+  .diff-tbl tr.replace td.code.left { background: rgba(248,81,73,0.10); }
+  .diff-tbl tr.replace td.code.right { background: rgba(63,185,80,0.10); }
+  .diff-tbl tr.delete td.code.right, .diff-tbl tr.insert td.code.left { background: var(--bg2); }
+
+  /* Unified diff */
+  .udiff-tbl { width: 100%; border-collapse: collapse; font-family: var(--font); font-size: 13px; line-height: 1.5; }
+  .udiff-tbl td { padding: 0 8px; white-space: pre-wrap; word-break: break-all; vertical-align: top; }
+  .udiff-tbl td.lno { width: 32px; text-align: right; color: var(--fg2); opacity: 0.4; user-select: none; padding-right: 10px; white-space: nowrap; word-break: normal; }
+  .udiff-tbl td.sign { width: 14px; text-align: center; user-select: none; padding: 0 2px; white-space: nowrap; word-break: normal; }
+  .udiff-tbl tr.del td { background: rgba(248,81,73,0.10); }
+  .udiff-tbl tr.del td.sign { color: var(--red); }
+  .udiff-tbl tr.ins td { background: rgba(63,185,80,0.10); }
+  .udiff-tbl tr.ins td.sign { color: var(--green); }
+  .udiff-tbl tr.ctx td.sign { color: var(--fg2); opacity: 0.3; }
+
+  /* Diff highlight spans */
+  .diff-hl { background: rgba(210,153,34,0.35); border-radius: 2px; }
+  .diff-tbl tr.delete .diff-hl { background: rgba(248,81,73,0.30); }
+  .diff-tbl tr.insert .diff-hl { background: rgba(63,185,80,0.30); }
+  .diff-tbl tr.replace td.left .diff-hl { background: rgba(248,81,73,0.30); }
+  .diff-tbl tr.replace td.right .diff-hl { background: rgba(63,185,80,0.30); }
+  .udiff-tbl tr.del .diff-hl { background: rgba(248,81,73,0.30); }
+  .udiff-tbl tr.ins .diff-hl { background: rgba(63,185,80,0.30); }
+
+  /* Uploaded pair row highlight */
+  .pair-item.has-upload { border-left: 3px solid var(--orange); }
+  .pair-item.has-upload .pair-sim { }
+  .pair-item.has-upload.selected { border-left: 3px solid var(--orange); background: var(--bg3); }
+
+  /* Welcome / loading */
+  .welcome { padding: 40px; text-align: center; color: var(--fg2); max-width: 600px; margin: 0 auto; }
+  .welcome h2 { color: var(--fg); margin-bottom: 12px; font-size: 22px; }
+  .welcome p { margin-bottom: 8px; line-height: 1.6; }
+  .welcome .drop-hint { margin-top: 24px; padding: 20px; border: 1px dashed var(--border); border-radius: 8px; }
+  .loading { padding: 20px; text-align: center; color: var(--fg2); }
+  .pill { display: inline-block; padding: 1px 8px; border-radius: 8px; font-size: 11px; font-weight: 600; font-family: var(--font); }
+
+  /* Loading spinner */
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .spinner { display: inline-block; width: 16px; height: 16px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.7s linear infinite; vertical-align: middle; }
+</style>
+</head>
+<body>
+<div id="app">
+  <header>
+    <h1 onclick="showWelcome()">nonna</h1>
+    <span class="tagline">code slop detector</span>
+    <input id="search-box" type="text" placeholder="Search functions... (/)" autocomplete="off">
+    <div class="stats" id="header-stats"><span class="spinner"></span> loading corpus...</div>
+    <button class="upload-btn" id="upload-btn" onclick="triggerUpload()" title="Upload a .py file or .zip to analyze against the corpus">
+      Upload .py / .zip
+    </button>
+    <input type="file" id="upload-input" accept=".py,.zip" multiple>
+  </header>
+  <main>
+    <div id="sidebar">
+      <div class="sidebar-tabs">
+        <button id="tab-pairs" class="active" onclick="switchTab('pairs')">Pairs</button>
+        <button id="tab-packages" onclick="switchTab('packages')">Packages</button>
+      </div>
+      <div id="sidebar-filters"></div>
+      <div id="sidebar-content"></div>
+    </div>
+    <div id="detail">
+      <div class="welcome" id="welcome-panel">
+        <h2>nonna</h2>
+        <p>Loading pre-indexed corpus...</p>
+      </div>
+    </div>
+  </main>
+</div>
+
+<!-- Drop overlay -->
+<div id="drop-overlay">
+  <p>Drop .py or .zip to analyze</p>
+  <small>Files are analyzed locally — nothing is uploaded to a server</small>
+</div>
+
+<!-- Upload toast -->
+<div id="upload-toast">
+  <div class="toast-title" id="toast-title">Analyzing...</div>
+  <div class="toast-body" id="toast-body"></div>
+</div>
+
+<script type="module">
+// ─── WASM bootstrap ─────────────────────────────────────────────────────────
+import init, {
+  load_corpus,
+  get_stats,
+  get_pairs,
+  get_function,
+  compare,
+  search,
+  get_packages,
+  analyze_source,
+  clear_uploaded,
+} from './pkg/nonna_wasm.js';
+
+// Expose to inline handlers
+window._wasm = {};
+
+async function bootstrap() {
+  await init('./pkg/nonna_wasm_bg.wasm');
+
+  // Expose functions for non-module handlers
+  Object.assign(window._wasm, {
+    get_stats, get_pairs, get_function, compare,
+    search, get_packages, analyze_source, clear_uploaded,
+  });
+
+  // Fetch and load pre-indexed corpus
+  const corpusResp = await fetch('./corpus.bin');
+  if (!corpusResp.ok) {
+    setWelcome(
+      '<h2>corpus.bin not found</h2>' +
+      '<p>Run <code style="font-family:var(--font)">cargo run -p nonna-corpus -- bench/pyenv/.venv/lib/python3.13/site-packages</code> first.</p>'
+    );
+    return;
+  }
+  const corpusBytes = new Uint8Array(await corpusResp.arrayBuffer());
+  const statsJson = load_corpus(corpusBytes);
+  const stats = JSON.parse(statsJson);
+
+  updateHeaderStats(stats);
+  renderFilters();
+  await loadPairs();
+  showWelcome();
+}
+
+bootstrap().catch(e => {
+  setWelcome(`<h2 style="color:var(--red)">Error</h2><p>${e}</p>`);
+  console.error(e);
+});
+
+// ─── State ──────────────────────────────────────────────────────────────────
+const $ = s => document.querySelector(s);
+let STATE = { pairs: [], packages: [] };
+let currentTab = 'pairs';
+let currentPairIdx = -1;
+let pairsOffset = 0;
+let minSim = 0.3;
+let maxSim = 1.0;
+let minFeatures = 0;
+let fileFilter = '';
+let searchTimeout = null;
+let hasUpload = false;
+let uploadedOnly = false;
+let diffMode = 'split'; // 'split' | 'unified'
+let weights = {
+  binop: 1.0, unop: 1.0, call: 1.0,
+  const_string: 0.2, const_other: 0.5,
+  field: 0.8, index: 0.8, construct: 0.6,
+};
+
+function updateHeaderStats(stats) {
+  const s = stats.stats || stats;
+  const uploaded = s.uploaded_functions || 0;
+  const uploadedHtml = uploaded > 0
+    ? ` · <span style="color:var(--orange)">${uploaded} uploaded</span>`
+    : '';
+  $('#header-stats').innerHTML =
+    `<b>${s.total_functions}</b> functions · <b>${s.total_pairs}</b> pairs · <b>${s.total_features}</b> features${uploadedHtml}`;
+  minSim = stats.threshold || minSim;
+  if (stats.default_weights) weights = stats.default_weights;
+}
+
+// ─── Tabs ───────────────────────────────────────────────────────────────────
+window.switchTab = function(tab) {
+  currentTab = tab;
+  document.querySelectorAll('.sidebar-tabs button').forEach(b => b.classList.remove('active'));
+  $(`#tab-${tab}`).classList.add('active');
+  if (tab === 'pairs') { renderFilters(); loadPairs(); }
+  else if (tab === 'packages') { renderPackageFilter(); loadPackages(); }
+};
+
+// ─── Filters ────────────────────────────────────────────────────────────────
+function renderFilters() {
+  const wk = Object.keys(weights);
+  const wLabels = {binop:'BinOp',unop:'UnOp',call:'Call',const_string:'Str const',const_other:'Num const',field:'Field',index:'Index',construct:'Construct'};
+  const weightRows = wk.map(k => `
+    <div class="weight-row">
+      <label>${wLabels[k]||k}</label>
+      <input type="range" min="0" max="100" value="${Math.round(weights[k]*100)}"
+        oninput="updateWeight('${k}',this.value)">
+      <span class="wval" id="wv-${k}">${weights[k].toFixed(1)}</span>
+    </div>`).join('');
+
+  const clearBtn = hasUpload
+    ? `<div class="filter-row" style="gap:6px">
+        <button onclick="toggleUploadedOnly()" style="background:var(--bg3);border:1px solid ${uploadedOnly ? 'var(--orange)' : 'var(--border)'};color:${uploadedOnly ? 'var(--orange)' : 'var(--fg2)'};padding:4px 10px;border-radius:4px;cursor:pointer;font-size:12px">${uploadedOnly ? '↑ Uploaded only' : '↑ Show uploaded only'}</button>
+        <button onclick="doClearUploaded()" style="background:var(--bg3);border:1px solid var(--border);color:var(--fg2);padding:4px 10px;border-radius:4px;cursor:pointer;font-size:12px">Clear</button>
+       </div>`
+    : '';
+
+  $('#sidebar-filters').innerHTML = `
+    ${clearBtn}
+    <div class="filter-row">
+      <label>Min sim</label>
+      <input type="range" id="sim-slider" min="0" max="100" value="${Math.round(minSim*100)}" oninput="updateMinSim(this.value)">
+      <span id="sim-label" style="font-family:var(--font);font-size:12px;width:36px">${Math.round(minSim*100)}%</span>
+    </div>
+    <div class="filter-row">
+      <label>Max sim</label>
+      <input type="range" id="maxsim-slider" min="0" max="100" value="${Math.round(maxSim*100)}" oninput="updateMaxSim(this.value)">
+      <span id="maxsim-label" style="font-family:var(--font);font-size:12px;width:36px">${Math.round(maxSim*100)}%</span>
+    </div>
+    <div class="filter-row">
+      <label>Min features</label>
+      <input type="range" id="minfeat-slider" min="0" max="50" value="${minFeatures}" oninput="updateMinFeatures(this.value)">
+      <span id="minfeat-label" style="font-family:var(--font);font-size:12px;width:28px">${minFeatures}</span>
+    </div>
+    <div class="filter-row">
+      <label>File filter</label>
+      <input type="text" id="file-filter" value="${fileFilter}" placeholder="e.g. flask" oninput="updateFileFilter(this.value)" style="flex:1">
+    </div>
+    <div class="filter-section">
+      <details>
+        <summary>Tag weights</summary>
+        ${weightRows}
+      </details>
+    </div>`;
+}
+
+window.toggleUploadedOnly = () => { uploadedOnly = !uploadedOnly; pairsOffset=0; renderFilters(); loadPairs(); };
+window.updateMinSim = v => { minSim = v/100; $('#sim-label').textContent = v+'%'; pairsOffset=0; debouncedLoadPairs(); };
+window.updateMaxSim = v => { maxSim = v/100; $('#maxsim-label').textContent = v+'%'; pairsOffset=0; debouncedLoadPairs(); };
+window.updateMinFeatures = v => { minFeatures = parseInt(v); $('#minfeat-label').textContent = v; pairsOffset=0; debouncedLoadPairs(); };
+window.updateFileFilter = v => { fileFilter = v; pairsOffset=0; debouncedLoadPairs(); };
+window.updateWeight = (k, v) => {
+  weights[k] = v/100;
+  const el = $(`#wv-${k}`);
+  if (el) el.textContent = (v/100).toFixed(1);
+};
+
+let pairsDebounce = null;
+function debouncedLoadPairs() {
+  clearTimeout(pairsDebounce);
+  pairsDebounce = setTimeout(() => loadPairs(), 150);
+}
+
+// ─── Pairs ──────────────────────────────────────────────────────────────────
+async function loadPairs() {
+  // When showing uploaded-only, fetch all pairs (no limit) so the client-side
+  // filter can find uploaded pairs regardless of where they rank by similarity.
+  // Total pairs in a typical corpus is ~2k so this is cheap.
+  const params = { offset: pairsOffset, limit: uploadedOnly ? 100000 : 200,
+                   min_sim: minSim, max_sim: maxSim, min_features: minFeatures };
+  // Only apply file_filter when not in uploadedOnly mode — in uploadedOnly mode
+  // the WASM file_filter would drop upload-vs-corpus pairs where the corpus
+  // side doesn't match the filename.
+  if (fileFilter && !uploadedOnly) params.file_filter = fileFilter;
+  const data = JSON.parse(get_pairs(JSON.stringify(params)));
+
+  // Client-side uploaded filter (WASM doesn't have this filter natively)
+  let pairs = data.pairs;
+  if (uploadedOnly) pairs = pairs.filter(p => p.a.is_uploaded || p.b.is_uploaded);
+  STATE.pairs = pairs;
+
+  const countLabel = uploadedOnly
+    ? `${pairs.length} pairs <span style="color:var(--orange)">· uploaded only</span>`
+    : `${data.total} pairs`;
+  let html = `<div style="padding:6px 14px;font-size:11px;color:var(--fg2)">${countLabel}</div>`;
+
+  pairs.forEach((p, i) => {
+    const color = simColor(p.similarity);
+    const hasUp = p.a.is_uploaded || p.b.is_uploaded;
+    const aBadge = p.a.is_uploaded ? '<span class="uploaded-badge">↑</span>' : '';
+    const bBadge = p.b.is_uploaded ? '<span class="uploaded-badge">↑</span>' : '';
+    const aNameColor = p.a.is_uploaded ? 'color:var(--orange)' : '';
+    const bNameColor = p.b.is_uploaded ? 'color:var(--orange)' : '';
+    html += `
+      <div class="pair-item${i===currentPairIdx?' selected':''}${hasUp?' has-upload':''}" onclick="selectPair(${i})" id="pair-${i}">
+        <div class="pair-sim">
+          <span class="sim-bar" style="width:${p.similarity*60}px;background:${color}"></span>
+          <span style="color:${color}">${(p.similarity*100).toFixed(1)}%</span>
+          ${hasUp ? '<span class="uploaded-badge" style="float:right">uploaded</span>' : ''}
+        </div>
+        <div class="pair-funcs">
+          <span class="fname" style="${aNameColor}">${esc(p.a.qualified_name)}</span>${aBadge} <span class="ffile">${esc(p.a.file)}:${p.a.line_start}</span><br>
+          <span class="fname" style="${bNameColor}">${esc(p.b.qualified_name)}</span>${bBadge} <span class="ffile">${esc(p.b.file)}:${p.b.line_start}</span>
+        </div>
+      </div>`;
+  });
+  $('#sidebar-content').innerHTML = html;
+}
+
+window.selectPair = async function(i) {
+  currentPairIdx = i;
+  document.querySelectorAll('.pair-item').forEach(el => el.classList.remove('selected'));
+  const el = $(`#pair-${i}`);
+  if (el) el.classList.add('selected');
+  const pair = STATE.pairs[i];
+  setHash(`compare/${pair.a.id}/${pair.b.id}`);
+  const cmp = fetchCompare(pair.a.id, pair.b.id);
+  renderCompare(cmp);
+};
+
+function fetchCompare(a, b) {
+  return JSON.parse(compare(a, b, JSON.stringify(weights)));
+}
+
+function renderCompare(cmp) {
+  lastCmp = cmp;
+  const total = cmp.shared_features + cmp.only_a + cmp.only_b;
+  const color = simColor(cmp.similarity);
+  const pctShared = total ? (cmp.shared_features/total*100) : 0;
+  const pctA = total ? (cmp.only_a/total*100) : 0;
+  const pctB = total ? (cmp.only_b/total*100) : 0;
+  const aBadge = cmp.a.is_uploaded ? '<span class="uploaded-badge">uploaded</span>' : '';
+  const bBadge = cmp.b.is_uploaded ? '<span class="uploaded-badge">uploaded</span>' : '';
+
+  let html = `
+    <div class="detail-header">
+      <h2>
+        <span style="color:var(--accent)">${esc(cmp.a.qualified_name)}</span>${aBadge}
+        <span style="color:var(--fg2);font-weight:400"> ↔ </span>
+        <span style="color:var(--purple)">${esc(cmp.b.qualified_name)}</span>${bBadge}
+        <span class="sim-badge" style="background:${color}20;color:${color}">${(cmp.similarity*100).toFixed(1)}%</span>
+      </h2>
+      <div class="meta">
+        ${esc(cmp.a.short_file)}:${cmp.a.line_start} · ${cmp.a.feature_count} features
+        &nbsp;↔&nbsp;
+        ${esc(cmp.b.short_file)}:${cmp.b.line_start} · ${cmp.b.feature_count} features
+      </div>
+    </div>
+    <div class="feature-bar">
+      <div class="shared" style="width:${pctShared}%" title="${cmp.shared_features} shared"></div>
+      <div class="only-a" style="width:${pctA}%" title="${cmp.only_a} only left"></div>
+      <div class="only-b" style="width:${pctB}%" title="${cmp.only_b} only right"></div>
+    </div>
+    <div class="feature-legend">
+      <span class="lg">${cmp.shared_features} shared</span>
+      <span class="la">${cmp.only_a} only left</span>
+      <span class="lb">${cmp.only_b} only right</span>
+    </div>
+    ${renderBreakdown(cmp.breakdown)}
+    <div class="diff-table-wrap">
+      <div class="diff-pane-headers">
+        <div class="diff-pane-hdr left">
+          <span class="pane-name">${esc(cmp.a.qualified_name)}</span>
+          <span class="pane-file"> ${esc(cmp.a.short_file)}:${cmp.a.line_start}-${cmp.a.line_end}</span>
+          <span class="pill" style="background:var(--accent)20;color:var(--accent);float:right">${cmp.a.op_count} ops · ${cmp.a.feature_count} feat</span>
+        </div>
+        ${diffMode === 'split' ? `<div class="diff-pane-hdr right">
+          <span class="pane-name">${esc(cmp.b.qualified_name)}</span>
+          <span class="pane-file"> ${esc(cmp.b.short_file)}:${cmp.b.line_start}-${cmp.b.line_end}</span>
+          <span class="pill" style="background:var(--purple)20;color:var(--purple);float:right">${cmp.b.op_count} ops · ${cmp.b.feature_count} feat</span>
+        </div>` : `<div class="diff-pane-hdr right" style="flex:0;border-left:1px solid var(--border)">
+          <span class="pane-name">${esc(cmp.b.qualified_name)}</span>
+          <span class="pane-file"> ${esc(cmp.b.short_file)}:${cmp.b.line_start}-${cmp.b.line_end}</span>
+        </div>`}
+        <button class="diff-mode-btn" onclick="toggleDiffMode()" title="Toggle split/unified diff">${diffMode === 'unified' ? 'Split' : 'Unified'}</button>
+      </div>
+      <div class="diff-scroll">
+        ${diffMode === 'unified'
+          ? `<table class="udiff-tbl">${renderUnifiedDiff(cmp.diff)}</table>`
+          : `<table class="diff-tbl">${renderDiffTable(cmp.diff)}</table>`}
+      </div>
+    </div>`;
+  $('#detail').innerHTML = html;
+}
+
+// ─── Packages ───────────────────────────────────────────────────────────────
+let pkgFilter = '';
+function renderPackageFilter() {
+  $('#sidebar-filters').innerHTML = `
+    <div class="filter-row">
+      <label>Filter</label>
+      <input type="text" id="pkg-filter" value="${esc(pkgFilter)}" placeholder="package name..." oninput="updatePkgFilter(this.value)" style="flex:1">
+    </div>`;
+}
+window.updatePkgFilter = v => { pkgFilter = v; renderPackageList(); };
+
+async function loadPackages() {
+  STATE.packages = JSON.parse(get_packages());
+  renderPackageList();
+}
+
+function renderPackageList() {
+  const q = pkgFilter.toLowerCase();
+  const filtered = q ? STATE.packages.filter(p => p.name.toLowerCase().includes(q)) : STATE.packages;
+  let html = `<div style="padding:6px 14px;font-size:11px;color:var(--fg2)">${filtered.length} packages</div>`;
+  filtered.forEach(pkg => {
+    const uploadedBadge = pkg.is_uploaded ? '<span class="uploaded-badge">↑</span>' : '';
+    html += `
+      <div class="pkg-item" onclick="filterByPackage('${esc(pkg.name)}')">
+        <div class="pkg-name">${esc(pkg.name)}${uploadedBadge}</div>
+        <div class="pkg-stats">
+          ${pkg.function_count} functions · ${pkg.file_count} files ·
+          ${pkg.internal_pairs} internal · ${pkg.cross_pairs} cross pairs
+        </div>
+      </div>`;
+  });
+  $('#sidebar-content').innerHTML = html;
+}
+
+window.filterByPackage = function(pkg) {
+  switchTab('pairs');
+  fileFilter = pkg;
+  setHash(`pairs/${pkg}`);
+  renderFilters();
+  pairsOffset = 0;
+  loadPairs();
+};
+
+// ─── Function detail ────────────────────────────────────────────────────────
+window.showFunction = function(id) {
+  setHash(`function/${id}`);
+  const data = JSON.parse(get_function(id));
+  const uploadedBadge = data.is_uploaded ? '<span class="uploaded-badge">uploaded</span>' : '';
+  let html = `
+    <div class="detail-header">
+      <h2>${esc(data.qualified_name)}${uploadedBadge}</h2>
+      <div class="meta">
+        ${esc(data.short_file)}:${data.line_start}-${data.line_end} ·
+        ${data.param_count} params · ${data.op_count} ops · ${data.feature_count} features ·
+        ${data.matches.length} matches
+      </div>
+    </div>
+    <div style="display:flex;flex:1;overflow:hidden">
+      <div style="flex:1;overflow:auto;border-right:1px solid var(--border)">
+        <pre class="source" style="height:100%">${esc(data.source)}</pre>
+      </div>
+      <div style="width:340px;overflow-y:auto;padding:12px">
+        <h3 style="margin-bottom:8px;font-size:14px;color:var(--fg2)">Matches</h3>`;
+
+  data.matches.forEach(m => {
+    const color = simColor(m.similarity);
+    const badge = m.is_uploaded ? '<span class="uploaded-badge">↑</span>' : '';
+    html += `
+        <div class="match-item" onclick="showCompareById(${id},${m.id})">
+          <span class="match-sim" style="color:${color}">${(m.similarity*100).toFixed(0)}%</span>
+          <div>
+            <div class="match-name">${esc(m.qualified_name)}${badge}</div>
+            <div class="match-file">${esc(m.file)}:${m.line_start}</div>
+          </div>
+        </div>`;
+  });
+  html += `</div></div>`;
+  $('#detail').innerHTML = html;
+};
+
+window.showCompareById = function(a, b) {
+  setHash(`compare/${a}/${b}`);
+  renderCompare(fetchCompare(a, b));
+};
+
+let lastCmp = null;
+window.toggleDiffMode = function() {
+  diffMode = diffMode === 'unified' ? 'split' : 'unified';
+  if (lastCmp) renderCompare(lastCmp);
+};
+
+// ─── Search ─────────────────────────────────────────────────────────────────
+$('#search-box').addEventListener('input', (e) => {
+  clearTimeout(searchTimeout);
+  const q = e.target.value.trim();
+  if (q.length < 2) { if (currentTab === 'pairs') loadPairs(); return; }
+  searchTimeout = setTimeout(() => {
+    const data = JSON.parse(search(q));
+    let html = `<div style="padding:6px 14px;font-size:11px;color:var(--fg2)">${data.results.length} results for "${esc(q)}"</div>`;
+    data.results.forEach(f => {
+      const badge = f.is_uploaded ? '<span class="uploaded-badge">↑</span>' : '';
+      html += `
+        <div class="search-item" onclick="showFunction(${f.id})">
+          <div><span style="font-family:var(--font);color:var(--accent)">${esc(f.qualified_name)}</span>${badge}
+          <span class="pill" style="background:var(--bg3);color:var(--fg2)">${f.feature_count}f</span></div>
+          <div style="font-size:11px;color:var(--fg2)">${esc(f.file)}:${f.line_start}</div>
+        </div>`;
+    });
+    $('#sidebar-content').innerHTML = html;
+  }, 150);
+});
+
+// ─── Upload ─────────────────────────────────────────────────────────────────
+window.triggerUpload = () => $('#upload-input').click();
+
+$('#upload-input').addEventListener('change', e => {
+  handleFiles([...e.target.files]);
+  e.target.value = ''; // reset so same file can be re-uploaded
+});
+
+// Drag & drop
+document.addEventListener('dragover', e => { e.preventDefault(); $('#drop-overlay').classList.add('active'); });
+document.addEventListener('dragleave', e => { if (!e.relatedTarget) $('#drop-overlay').classList.remove('active'); });
+document.addEventListener('drop', e => {
+  e.preventDefault();
+  $('#drop-overlay').classList.remove('active');
+  handleFiles([...e.dataTransfer.files]);
+});
+
+async function handleFiles(files) {
+  const pyFiles = [];
+  for (const file of files) {
+    if (file.name.endsWith('.py')) {
+      pyFiles.push({ name: file.name, bytes: new Uint8Array(await file.arrayBuffer()) });
+    } else if (file.name.endsWith('.zip')) {
+      // Extract .py files from zip using browser-native DecompressionStream (ZIP is not natively supported)
+      // Fall back to treating the whole zip as opaque — we use a minimal ZIP parser.
+      const extracted = await extractPyFromZip(file);
+      pyFiles.push(...extracted);
+    }
+  }
+
+  if (pyFiles.length === 0) {
+    showToast('No Python files found', 'Make sure your zip contains .py files.', 'err');
+    return;
+  }
+
+  showToast('Analyzing...', `Processing ${pyFiles.length} file(s)...`, 'info');
+
+  let totalAdded = 0;
+  let totalPairs = 0;
+  const errors = [];
+
+  for (const { name, bytes } of pyFiles) {
+    try {
+      const result = JSON.parse(analyze_source(name, bytes));
+      totalAdded += result.added_functions;
+      totalPairs += result.added_pairs;
+    } catch (e) {
+      errors.push(`${name}: ${e}`);
+    }
+  }
+
+  hasUpload = true;
+  uploadedOnly = true;
+  $('#upload-btn').classList.add('has-upload');
+
+  // Refresh stats
+  const stats = JSON.parse(get_stats());
+  updateHeaderStats(stats);
+
+  if (errors.length > 0) {
+    showToast('Upload complete (with errors)',
+      `${totalAdded} functions · ${totalPairs} pairs · ${errors.length} error(s)`, 'err');
+  } else {
+    showToast('Upload complete',
+      `Added ${totalAdded} functions · ${totalPairs} new pairs`, 'ok');
+  }
+
+  renderFilters();
+  await loadPairs();
+}
+
+window.doClearUploaded = async function() {
+  clear_uploaded();
+  hasUpload = false;
+  uploadedOnly = false;
+  $('#upload-btn').classList.remove('has-upload');
+  const stats = JSON.parse(get_stats());
+  updateHeaderStats(stats);
+  renderFilters();
+  await loadPairs();
+  showToast('Cleared', 'Uploaded functions removed.', 'ok');
+};
+
+// ─── Minimal ZIP parser ──────────────────────────────────────────────────────
+// Reads the Central Directory to find .py entries, then decompresses stored
+// (method=0) or deflated (method=8) entries using DecompressionStream.
+async function extractPyFromZip(file) {
+  const buf = await file.arrayBuffer();
+  const bytes = new Uint8Array(buf);
+  const view = new DataView(buf);
+
+  // Find End of Central Directory record (signature 0x06054b50)
+  let eocdOffset = -1;
+  for (let i = bytes.length - 22; i >= 0; i--) {
+    if (view.getUint32(i, true) === 0x06054b50) { eocdOffset = i; break; }
+  }
+  if (eocdOffset < 0) return [];
+
+  const cdOffset = view.getUint32(eocdOffset + 16, true);
+  const cdSize = view.getUint32(eocdOffset + 12, true);
+  const results = [];
+  let pos = cdOffset;
+
+  while (pos < cdOffset + cdSize) {
+    if (view.getUint32(pos, true) !== 0x02014b50) break; // Central Dir sig
+    const method = view.getUint16(pos + 10, true);
+    const compSize = view.getUint32(pos + 20, true);
+    const uncompSize = view.getUint32(pos + 24, true);
+    const nameLen = view.getUint16(pos + 28, true);
+    const extraLen = view.getUint16(pos + 30, true);
+    const commentLen = view.getUint16(pos + 32, true);
+    const localHeaderOffset = view.getUint32(pos + 42, true);
+    const name = new TextDecoder().decode(bytes.slice(pos + 46, pos + 46 + nameLen));
+    pos += 46 + nameLen + extraLen + commentLen;
+
+    if (!name.endsWith('.py') || name.includes('__pycache__')) continue;
+
+    // Read local file header to find actual data offset
+    const lhExtraLen = view.getUint16(localHeaderOffset + 28, true);
+    const lhNameLen = view.getUint16(localHeaderOffset + 26, true);
+    const dataOffset = localHeaderOffset + 30 + lhNameLen + lhExtraLen;
+    const compData = bytes.slice(dataOffset, dataOffset + compSize);
+
+    let uncompressed;
+    if (method === 0) {
+      uncompressed = compData;
+    } else if (method === 8) {
+      try {
+        const ds = new DecompressionStream('deflate-raw');
+        const writer = ds.writable.getWriter();
+        const reader = ds.readable.getReader();
+        writer.write(compData);
+        writer.close();
+        const chunks = [];
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          chunks.push(value);
+        }
+        const total = chunks.reduce((a, c) => a + c.length, 0);
+        uncompressed = new Uint8Array(total);
+        let off = 0;
+        for (const c of chunks) { uncompressed.set(c, off); off += c.length; }
+      } catch (e) { continue; }
+    } else {
+      continue; // unsupported compression method
+    }
+
+    // Use just the filename part for display
+    const shortName = name.split('/').pop() || name;
+    results.push({ name: shortName, bytes: uncompressed });
+  }
+
+  return results;
+}
+
+// ─── Toast ──────────────────────────────────────────────────────────────────
+let toastTimer = null;
+function showToast(title, body, kind = 'info') {
+  const toast = $('#upload-toast');
+  $('#toast-title').textContent = title;
+  const bodyEl = $('#toast-body');
+  bodyEl.textContent = body;
+  bodyEl.className = 'toast-body' + (kind === 'ok' ? ' toast-ok' : kind === 'err' ? ' toast-err' : '');
+  toast.classList.add('visible');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => toast.classList.remove('visible'), 5000);
+}
+
+// ─── Diff rendering ─────────────────────────────────────────────────────────
+function renderDiffTable(diff) {
+  if (!diff || !diff.length) return '<tr><td colspan="5" style="padding:20px;color:var(--fg2)">(no diff)</td></tr>';
+  return diff.map(d => {
+    const L = d.left, R = d.right;
+    const codeL = L ? L.segments.map(([hl,t]) => hl ? `<span class="diff-hl">${esc(t)}</span>` : esc(t)).join('') : '';
+    const codeR = R ? R.segments.map(([hl,t]) => hl ? `<span class="diff-hl">${esc(t)}</span>` : esc(t)).join('') : '';
+    return `<tr class="${d.kind}"><td class="lno">${L?L.line_no:''}</td><td class="code left">${codeL}</td><td class="sep"></td><td class="lno">${R?R.line_no:''}</td><td class="code right">${codeR}</td></tr>`;
+  }).join('');
+}
+
+function renderUnifiedDiff(diff) {
+  if (!diff || !diff.length) return '<tr><td colspan="3" style="padding:20px;color:var(--fg2)">(no diff)</td></tr>';
+  const rows = [];
+  for (const d of diff) {
+    const L = d.left, R = d.right;
+    if (d.kind === 'equal') {
+      const code = L ? L.segments.map(([hl,t]) => esc(t)).join('') : '';
+      rows.push(`<tr class="ctx"><td class="lno">${L?L.line_no:''}</td><td class="lno">${R?R.line_no:''}</td><td class="sign"> </td><td>${code}</td></tr>`);
+    } else if (d.kind === 'delete') {
+      const code = L ? L.segments.map(([hl,t]) => hl ? `<span class="diff-hl">${esc(t)}</span>` : esc(t)).join('') : '';
+      rows.push(`<tr class="del"><td class="lno">${L?L.line_no:''}</td><td class="lno"></td><td class="sign">−</td><td>${code}</td></tr>`);
+    } else if (d.kind === 'insert') {
+      const code = R ? R.segments.map(([hl,t]) => hl ? `<span class="diff-hl">${esc(t)}</span>` : esc(t)).join('') : '';
+      rows.push(`<tr class="ins"><td class="lno"></td><td class="lno">${R?R.line_no:''}</td><td class="sign">+</td><td>${code}</td></tr>`);
+    } else if (d.kind === 'replace') {
+      if (L) {
+        const code = L.segments.map(([hl,t]) => hl ? `<span class="diff-hl">${esc(t)}</span>` : esc(t)).join('');
+        rows.push(`<tr class="del"><td class="lno">${L.line_no}</td><td class="lno"></td><td class="sign">−</td><td>${code}</td></tr>`);
+      }
+      if (R) {
+        const code = R.segments.map(([hl,t]) => hl ? `<span class="diff-hl">${esc(t)}</span>` : esc(t)).join('');
+        rows.push(`<tr class="ins"><td class="lno"></td><td class="lno">${R.line_no}</td><td class="sign">+</td><td>${code}</td></tr>`);
+      }
+    }
+  }
+  return rows.join('');
+}
+
+// ─── Breakdown ──────────────────────────────────────────────────────────────
+function renderBreakdown(breakdown) {
+  if (!breakdown || !breakdown.length) return '';
+  const labels = {binop:'BinOp',unop:'UnOp',call:'Call',const_string:'Str const',const_other:'Num const',field:'Field',index:'Index',construct:'Construct'};
+  const rows = breakdown.filter(b => b.count_a + b.count_b > 0).map(b => {
+    const total = b.count_a + b.count_b - b.shared;
+    const pct = total > 0 ? (b.shared/total*100).toFixed(0) : '-';
+    const wColor = b.weight < 0.5 ? 'var(--fg2)' : b.weight >= 1.0 ? 'var(--accent)' : 'var(--fg)';
+    return `<tr style="font-size:12px">
+      <td style="padding:2px 8px;font-family:var(--font)">${labels[b.tag]||b.tag}</td>
+      <td style="padding:2px 8px;text-align:right;color:${wColor}">${b.weight.toFixed(1)}</td>
+      <td style="padding:2px 8px;text-align:right">${b.count_a}</td>
+      <td style="padding:2px 8px;text-align:right">${b.count_b}</td>
+      <td style="padding:2px 8px;text-align:right;color:var(--green)">${b.shared}</td>
+      <td style="padding:2px 8px;text-align:right">${pct}%</td>
+    </tr>`;
+  }).join('');
+  return `<div style="padding:0 20px 8px;overflow-x:auto">
+    <table style="border-collapse:collapse;width:100%">
+      <tr style="font-size:11px;color:var(--fg2)">
+        <th style="text-align:left;padding:2px 8px">Tag</th>
+        <th style="text-align:right;padding:2px 8px">Weight</th>
+        <th style="text-align:right;padding:2px 8px">Left</th>
+        <th style="text-align:right;padding:2px 8px">Right</th>
+        <th style="text-align:right;padding:2px 8px">Shared</th>
+        <th style="text-align:right;padding:2px 8px">Match</th>
+      </tr>
+      ${rows}
+    </table></div>`;
+}
+
+// ─── Welcome ────────────────────────────────────────────────────────────────
+function setWelcome(html) {
+  $('#detail').innerHTML = `<div class="welcome" style="margin-top:60px">${html}</div>`;
+}
+
+window.showWelcome = function() {
+  $('#detail').innerHTML = `
+    <div class="welcome" style="margin-top:60px">
+      <h2>nonna — code slop detector</h2>
+      <p>Browse the pre-indexed corpus of popular Python packages on the left,
+         or upload your own code to find what's duplicated.</p>
+      <p style="font-size:12px;color:var(--fg2)">
+        Data-flow feature hashing · iterative DFG propagation · weighted Jaccard similarity
+      </p>
+      <div class="drop-hint">
+        <p style="color:var(--fg2);font-size:13px">
+          Drop a <b style="color:var(--fg)">.py</b> file or <b style="color:var(--fg)">.zip</b> anywhere,
+          or use the <b style="color:var(--fg)">Upload</b> button above.
+        </p>
+        <p style="color:var(--fg2);font-size:12px;margin-top:6px">
+          Everything runs locally in your browser — no data leaves your machine.
+        </p>
+      </div>
+    </div>`;
+};
+
+// ─── Utils ──────────────────────────────────────────────────────────────────
+function simColor(s) {
+  if (s >= 0.8) return 'var(--green)';
+  if (s >= 0.5) return 'var(--yellow)';
+  return 'var(--fg2)';
+}
+function esc(s) {
+  if (!s) return '';
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+// ─── Hash routing ────────────────────────────────────────────────────────────
+let suppressHash = false;
+function setHash(h) {
+  suppressHash = true;
+  location.hash = h;
+  setTimeout(() => suppressHash = false, 0);
+}
+async function handleHash() {
+  const h = location.hash.replace(/^#\/?/, '');
+  if (!h) return;
+  const parts = h.split('/');
+  if (parts[0] === 'compare' && parts[1] && parts[2]) {
+    const a = parseInt(parts[1]), b = parseInt(parts[2]);
+    if (!isNaN(a) && !isNaN(b)) renderCompare(fetchCompare(a, b));
+  } else if (parts[0] === 'function' && parts[1]) {
+    const id = parseInt(parts[1]);
+    if (!isNaN(id)) window.showFunction(id);
+  } else if (parts[0] === 'packages') {
+    switchTab('packages');
+  }
+}
+window.addEventListener('hashchange', () => { if (!suppressHash) handleHash(); });
+
+// ─── Keyboard ────────────────────────────────────────────────────────────────
+document.addEventListener('keydown', e => {
+  if (e.target.tagName === 'INPUT') return;
+  if (e.key === 'j' || e.key === 'ArrowDown') { e.preventDefault(); if (currentPairIdx < STATE.pairs.length-1) window.selectPair(currentPairIdx+1); }
+  if (e.key === 'k' || e.key === 'ArrowUp') { e.preventDefault(); if (currentPairIdx > 0) window.selectPair(currentPairIdx-1); }
+  if (e.key === '/') { e.preventDefault(); $('#search-box').focus(); }
+  if (e.key === 'u') { e.preventDefault(); window.triggerUpload(); }
+});
+</script>
+</body>
+</html>

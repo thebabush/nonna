@@ -1,0 +1,15 @@
+{
+  "name": "nonna-wasm",
+  "type": "module",
+  "version": "0.1.0",
+  "files": [
+    "nonna_wasm_bg.wasm",
+    "nonna_wasm.js",
+    "nonna_wasm.d.ts"
+  ],
+  "main": "nonna_wasm.js",
+  "types": "nonna_wasm.d.ts",
+  "sideEffects": [
+    "./snippets/*"
+  ]
+}
