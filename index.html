@@ -49,34 +49,37 @@
   main { display: flex; flex: 1; overflow: hidden; }
 
   /* Sidebar */
-  #sidebar { width: 340px; border-right: 1px solid var(--border); display: flex; flex-direction: column; flex-shrink: 0; background: var(--bg2); }
+  #sidebar { width: 340px; border-right: none; display: flex; flex-direction: column; flex-shrink: 0; background: var(--bg2); position: relative; overflow: hidden; }
+  #sidebar-resize { width: 5px; cursor: col-resize; background: var(--border); position: absolute; top: 0; right: 0; bottom: 0; z-index: 10; transition: background 0.15s; }
+  #sidebar-resize:hover, #sidebar-resize.dragging { background: var(--accent); }
   .sidebar-tabs { display: flex; border-bottom: 1px solid var(--border); }
   .sidebar-tabs button { flex: 1; padding: 8px; background: none; border: none; color: var(--fg2); cursor: pointer; font-size: 13px; border-bottom: 2px solid transparent; }
   .sidebar-tabs button.active { color: var(--accent); border-bottom-color: var(--accent); }
   .sidebar-tabs button:hover { color: var(--fg); }
-  #sidebar-content { flex: 1; overflow-y: auto; }
+  #sidebar-content { flex: 1; overflow-y: auto; min-width: 0; }
+  #sidebar-filters { min-width: 0; overflow: hidden; }
 
   /* Pair list */
   .pair-item { padding: 10px 14px; border-bottom: 1px solid var(--border); cursor: pointer; transition: background 0.1s; }
   .pair-item:hover { background: var(--bg3); }
   .pair-item.selected { background: var(--bg3); border-left: 3px solid var(--accent); }
   .pair-sim { font-size: 13px; font-weight: 600; margin-bottom: 4px; }
-  .pair-funcs { font-size: 12px; color: var(--fg2); line-height: 1.5; }
-  .pair-funcs .fname { color: var(--fg); font-family: var(--font); }
-  .pair-funcs .ffile { color: var(--fg2); font-size: 11px; }
+  .pair-funcs { font-size: 12px; color: var(--fg2); line-height: 1.5; overflow: hidden; text-overflow: ellipsis; }
+  .pair-funcs .fname { color: var(--fg); font-family: var(--font); white-space: nowrap; }
+  .pair-funcs .ffile { color: var(--fg2); font-size: 11px; white-space: nowrap; }
   .sim-bar { display: inline-block; height: 4px; border-radius: 2px; margin-right: 6px; vertical-align: middle; }
 
   /* Filters */
-  .filter-row { padding: 6px 14px; border-bottom: 1px solid var(--border); display: flex; gap: 8px; align-items: center; }
-  .filter-row label { font-size: 12px; color: var(--fg2); white-space: nowrap; min-width: 72px; }
-  .filter-row input, .filter-row select { background: var(--bg); border: 1px solid var(--border); color: var(--fg); padding: 4px 8px; border-radius: 4px; font-size: 12px; }
-  .filter-row input[type=range] { flex: 1; }
+  .filter-row { padding: 6px 14px; border-bottom: 1px solid var(--border); display: flex; gap: 8px; align-items: center; min-width: 0; }
+  .filter-row label { font-size: 12px; color: var(--fg2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex-shrink: 0; }
+  .filter-row input, .filter-row select { background: var(--bg); border: 1px solid var(--border); color: var(--fg); padding: 4px 8px; border-radius: 4px; font-size: 12px; min-width: 0; }
+  .filter-row input[type=range] { flex: 1; min-width: 20px; }
   .filter-section { padding: 6px 14px; border-bottom: 1px solid var(--border); }
   .filter-section summary { font-size: 12px; color: var(--fg2); cursor: pointer; user-select: none; }
-  .weight-row { display: flex; gap: 6px; align-items: center; padding: 3px 0; }
-  .weight-row label { font-size: 11px; color: var(--fg2); width: 80px; font-family: var(--font); }
-  .weight-row input[type=range] { flex: 1; height: 4px; }
-  .weight-row .wval { font-size: 11px; color: var(--fg); font-family: var(--font); width: 28px; text-align: right; }
+  .weight-row { display: flex; gap: 6px; align-items: center; padding: 3px 0; min-width: 0; }
+  .weight-row label { font-size: 11px; color: var(--fg2); flex-shrink: 0; font-family: var(--font); overflow: hidden; text-overflow: ellipsis; }
+  .weight-row input[type=range] { flex: 1; height: 4px; min-width: 20px; }
+  .weight-row .wval { font-size: 11px; color: var(--fg); font-family: var(--font); width: 28px; text-align: right; flex-shrink: 0; }
 
   /* Package list */
   .pkg-item { padding: 8px 14px; border-bottom: 1px solid var(--border); cursor: pointer; }
@@ -96,11 +99,17 @@
   .sim-badge { display: inline-block; padding: 2px 10px; border-radius: 10px; font-weight: 600; font-size: 14px; margin-left: 8px; }
 
   /* Feature breakdown */
+  .feature-details { border-bottom: 1px solid var(--border); }
+  .feature-details summary { list-style: none; cursor: pointer; }
+  .feature-details summary::-webkit-details-marker { display: none; }
+  .feature-details summary::marker { display: none; content: ''; }
+  .feature-details .feature-legend::after { content: '▸ detail'; font-size: 11px; color: var(--fg2); opacity: 0.5; margin-left: auto; }
+  .feature-details[open] .feature-legend::after { content: '▾ detail'; }
   .feature-bar { display: flex; height: 24px; border-radius: 4px; overflow: hidden; margin: 12px 20px; gap: 1px; }
   .feature-bar .shared { background: var(--green); }
   .feature-bar .only-a { background: var(--red); }
   .feature-bar .only-b { background: var(--yellow); }
-  .feature-legend { display: flex; gap: 16px; padding: 0 20px 12px; font-size: 12px; color: var(--fg2); }
+  .feature-legend { display: flex; align-items: center; gap: 16px; padding: 0 20px 12px; font-size: 12px; color: var(--fg2); }
   .feature-legend span::before { content: ''; display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 4px; vertical-align: middle; }
   .feature-legend .lg::before { background: var(--green); }
   .feature-legend .la::before { background: var(--red); }
@@ -128,7 +137,7 @@
   .diff-scroll { flex: 1; overflow: auto; }
 
   /* Split diff */
-  .diff-tbl { width: 100%; border-collapse: collapse; font-family: var(--font); font-size: 13px; line-height: 1.5; }
+  .diff-tbl { width: 100%; border-collapse: collapse; font-family: var(--font); font-size: 12px; line-height: 1.5; }
   .diff-tbl td { padding: 0 8px; white-space: pre; vertical-align: top; }
   .diff-tbl td.lno { width: 32px; text-align: right; color: var(--fg2); opacity: 0.4; user-select: none; padding-right: 10px; }
   .diff-tbl td.code { width: 50%; }
@@ -140,7 +149,7 @@
   .diff-tbl tr.delete td.code.right, .diff-tbl tr.insert td.code.left { background: var(--bg2); }
 
   /* Unified diff */
-  .udiff-tbl { width: 100%; border-collapse: collapse; font-family: var(--font); font-size: 13px; line-height: 1.5; }
+  .udiff-tbl { width: 100%; border-collapse: collapse; font-family: var(--font); font-size: 12px; line-height: 1.5; }
   .udiff-tbl td { padding: 0 8px; white-space: pre-wrap; word-break: break-all; vertical-align: top; }
   .udiff-tbl td.lno { width: 32px; text-align: right; color: var(--fg2); opacity: 0.4; user-select: none; padding-right: 10px; white-space: nowrap; word-break: normal; }
   .udiff-tbl td.sign { width: 14px; text-align: center; user-select: none; padding: 0 2px; white-space: nowrap; word-break: normal; }
@@ -175,6 +184,66 @@
   /* Loading spinner */
   @keyframes spin { to { transform: rotate(360deg); } }
   .spinner { display: inline-block; width: 16px; height: 16px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.7s linear infinite; vertical-align: middle; }
+
+  /* Sidebar toggle */
+  .sidebar-toggle { display: none; background: var(--bg3); border: 1px solid var(--border); color: var(--fg2); padding: 4px 10px; border-radius: 6px; font-size: 13px; cursor: pointer; white-space: nowrap; }
+  .sidebar-toggle:hover { border-color: var(--accent); color: var(--fg); }
+
+  /* Safe area for MacBook notch */
+  @supports (padding: env(safe-area-inset-top)) {
+    header { padding-left: max(20px, env(safe-area-inset-left)); padding-right: max(20px, env(safe-area-inset-right)); }
+  }
+
+  /* ── Responsive: narrow laptops (≤1400px effective) ── */
+  @media (max-width: 1400px) {
+    #sidebar { width: 290px; }
+    .pair-funcs .fname { font-size: 11px; }
+    .pair-funcs .ffile { font-size: 10px; }
+    #search-box { width: 180px; }
+  }
+
+  /* ── Responsive: 13" MacBook / tight scaling (≤1280px) ── */
+  @media (max-width: 1280px) {
+    #sidebar { width: 260px; }
+    header { padding: 8px 14px; gap: 10px; }
+    header h1 { font-size: 16px; }
+    header .tagline { display: none; }
+    #search-box { width: 160px; font-size: 12px; padding: 5px 10px; }
+    header .stats { font-size: 11px; }
+    .filter-row label { font-size: 11px; }
+    .pair-item { padding: 8px 10px; }
+    .detail-header { padding: 12px 16px; }
+    .detail-header h2 { font-size: 14px; }
+    .feature-bar { margin: 10px 16px; }
+    .feature-legend { padding: 0 16px 10px; }
+    .diff-pane-hdr { padding: 6px 10px; font-size: 11px; }
+    .sidebar-toggle { display: inline-block; }
+  }
+
+  /* ── Responsive: very narrow / small window (≤1024px) ── */
+  @media (max-width: 1024px) {
+    #sidebar { width: 240px; }
+    #sidebar.collapsed { display: none; }
+    main.sidebar-collapsed #detail { flex: 1; }
+    .sidebar-toggle { display: inline-block; }
+    .diff-tbl td.code { font-size: 11px; }
+    .udiff-tbl td { font-size: 11px; }
+    .upload-btn { padding: 5px 10px; font-size: 12px; }
+  }
+
+  /* ── Responsive: tablet-ish / very tight (≤768px) ── */
+  @media (max-width: 768px) {
+    main { flex-direction: column; }
+    #sidebar { width: 100%; max-height: 40vh; border-right: none; border-bottom: 1px solid var(--border); }
+    #sidebar.collapsed { display: none; }
+    #detail { flex: 1; overflow-y: auto; }
+    header { flex-wrap: wrap; }
+    #search-box { width: 100%; order: 10; }
+    .diff-pane-headers { flex-wrap: wrap; }
+    .diff-pane-hdr { min-width: 0; }
+    .diff-pane-hdr .pane-file { display: none; }
+    #sidebar-resize { display: none; }
+  }
 </style>
 </head>
 <body>
@@ -184,6 +253,7 @@
     <span class="tagline">code slop detector</span>
     <input id="search-box" type="text" placeholder="Search functions... (/)" autocomplete="off">
     <div class="stats" id="header-stats"><span class="spinner"></span> loading corpus...</div>
+    <button class="sidebar-toggle" id="sidebar-toggle" onclick="toggleSidebar()" title="Toggle sidebar">☰</button>
     <button class="upload-btn" id="upload-btn" onclick="triggerUpload()" title="Upload a .py file or .zip to analyze against the corpus">
       Upload .py / .zip
     </button>
@@ -191,6 +261,7 @@
   </header>
   <main>
     <div id="sidebar">
+      <div id="sidebar-resize"></div>
       <div class="sidebar-tabs">
         <button id="tab-pairs" class="active" onclick="switchTab('pairs')">Pairs</button>
         <button id="tab-packages" onclick="switchTab('packages')">Packages</button>
@@ -261,7 +332,13 @@ async function bootstrap() {
   updateHeaderStats(stats);
   renderFilters();
   await loadPairs();
-  showWelcome();
+
+  // Restore view from URL hash, or show welcome
+  if (location.hash.replace(/^#\/?/, '')) {
+    handleHash();
+  } else {
+    showWelcome();
+  }
 }
 
 bootstrap().catch(e => {
@@ -282,7 +359,7 @@ let fileFilter = '';
 let searchTimeout = null;
 let hasUpload = false;
 let uploadedOnly = false;
-let diffMode = 'split'; // 'split' | 'unified'
+let diffMode = window.innerWidth <= 1280 ? 'unified' : 'split';
 let weights = {
   binop: 1.0, unop: 1.0, call: 1.0,
   const_string: 0.2, const_other: 0.5,
@@ -460,17 +537,21 @@ function renderCompare(cmp) {
         ${esc(cmp.b.short_file)}:${cmp.b.line_start} · ${cmp.b.feature_count} features
       </div>
     </div>
-    <div class="feature-bar">
-      <div class="shared" style="width:${pctShared}%" title="${cmp.shared_features} shared"></div>
-      <div class="only-a" style="width:${pctA}%" title="${cmp.only_a} only left"></div>
-      <div class="only-b" style="width:${pctB}%" title="${cmp.only_b} only right"></div>
-    </div>
-    <div class="feature-legend">
-      <span class="lg">${cmp.shared_features} shared</span>
-      <span class="la">${cmp.only_a} only left</span>
-      <span class="lb">${cmp.only_b} only right</span>
-    </div>
-    ${renderBreakdown(cmp.breakdown)}
+    <details class="feature-details">
+      <summary>
+        <div class="feature-bar">
+          <div class="shared" style="width:${pctShared}%" title="${cmp.shared_features} shared"></div>
+          <div class="only-a" style="width:${pctA}%" title="${cmp.only_a} only left"></div>
+          <div class="only-b" style="width:${pctB}%" title="${cmp.only_b} only right"></div>
+        </div>
+        <div class="feature-legend">
+          <span class="lg">${cmp.shared_features} shared</span>
+          <span class="la">${cmp.only_a} only left</span>
+          <span class="lb">${cmp.only_b} only right</span>
+        </div>
+      </summary>
+      ${renderBreakdown(cmp.breakdown)}
+    </details>
     <div class="diff-table-wrap">
       <div class="diff-pane-headers">
         <div class="diff-pane-hdr left">
@@ -902,11 +983,48 @@ async function handleHash() {
   } else if (parts[0] === 'function' && parts[1]) {
     const id = parseInt(parts[1]);
     if (!isNaN(id)) window.showFunction(id);
+  } else if (parts[0] === 'pairs' && parts[1]) {
+    fileFilter = decodeURIComponent(parts.slice(1).join('/'));
+    switchTab('pairs');
   } else if (parts[0] === 'packages') {
     switchTab('packages');
   }
 }
 window.addEventListener('hashchange', () => { if (!suppressHash) handleHash(); });
+
+// ─── Sidebar toggle ──────────────────────────────────────────────────────
+window.toggleSidebar = function() {
+  const sidebar = $('#sidebar');
+  sidebar.classList.toggle('collapsed');
+  const btn = $('#sidebar-toggle');
+  btn.textContent = sidebar.classList.contains('collapsed') ? '☰ Show' : '☰';
+};
+
+// ─── Sidebar resize drag ─────────────────────────────────────────────────────
+{
+  const handle = $('#sidebar-resize');
+  const sidebar = $('#sidebar');
+  let dragging = false;
+  handle.addEventListener('mousedown', e => {
+    e.preventDefault();
+    dragging = true;
+    handle.classList.add('dragging');
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+  });
+  document.addEventListener('mousemove', e => {
+    if (!dragging) return;
+    const w = Math.min(Math.max(e.clientX, 80), window.innerWidth - 300);
+    sidebar.style.width = w + 'px';
+  });
+  document.addEventListener('mouseup', () => {
+    if (!dragging) return;
+    dragging = false;
+    handle.classList.remove('dragging');
+    document.body.style.cursor = '';
+    document.body.style.userSelect = '';
+  });
+}
 
 // ─── Keyboard ────────────────────────────────────────────────────────────────
 document.addEventListener('keydown', e => {
