@@ -20,7 +20,7 @@ let cmd_features (file : string) =
   Units.units_of_file file
   |> List.iter (fun (u : Units.unit_info) ->
          let feats = Dfg.extract u.Units.ucfg in
-         let sg = Signature.extract u.Units.ucfg in
+         let sg = Signature.extract ~ext:(Filename.extension u.Units.ufile) u.Units.ucfg in
          Printf.printf "=== %s (%s) — %d dfg features, %d total\n"
            u.Units.uname (Units.loc_str u) (List.length feats)
            (Signature.size sg);
@@ -50,7 +50,7 @@ let cmd_query (corpus : string list) (draft : string) (threshold : float)
   Printf.printf "corpus: %d units indexed\n" (List.length kept);
   Units.units_of_file draft
   |> List.iter (fun (u : Units.unit_info) ->
-         let sg = Signature.extract u.Units.ucfg in
+         let sg = Signature.extract ~ext:(Filename.extension u.Units.ufile) u.Units.ucfg in
          Printf.printf "\n── %s (%s) — %d features\n" u.Units.uname
            (Units.loc_str u) (Signature.size sg);
          if Signature.size sg < Units.min_features then
@@ -103,7 +103,10 @@ let cmd_graph (file : string) (fn_filter : string option) (outdir : string) =
   in
   selected
   |> List.iter (fun (u : Units.unit_info) ->
-         let g = Dfg.graph_of u.Units.ucfg in
+         let g =
+           Dfg.graph_of ~fc:(Dfg.base_cfg_for (Filename.extension file))
+             u.Units.ucfg
+         in
          let source =
            if u.Units.uline_start > 0 && file_lines <> [] then
              Some

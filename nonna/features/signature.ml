@@ -43,14 +43,16 @@ let full_profile =
 (* Set once at CLI startup (--profile). *)
 let default_profile : profile ref = ref structural_profile
 
-let extract ?(profile : profile option) (fcfg : IL.fun_cfg) : t =
+(* [ext] selects the per-language base channels (Dfg.base_cfg_for). *)
+let extract ?(profile : profile option) ?(ext = "") (fcfg : IL.fun_cfg) : t =
   let p = match profile with Some p -> p | None -> !default_profile in
+  let fc = Dfg.base_cfg_for ext in
   let sem = Semantic.extract_parts fcfg in
   let all : (Fhash.t * float) list =
-    (Dfg.extract fcfg
+    (Dfg.extract ~fc fcfg
     |> List.map (fun (f : Dfg.feature) -> (f.Dfg.hash, dfg_weight f.Dfg.tag)))
     @ (if p.w_delta_sem > 0. then
-         Dfg.extract_delta ~rich:Dfg.semantic_cfg fcfg
+         Dfg.extract_delta ~base:fc ~rich:Dfg.semantic_cfg fcfg
          |> List.map (fun (f : Dfg.feature) ->
                 (f.Dfg.hash, p.w_delta_sem *. dfg_weight f.Dfg.tag))
        else [])

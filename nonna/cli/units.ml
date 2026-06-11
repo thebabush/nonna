@@ -171,7 +171,7 @@ let index_units (units : unit_info list) :
   let kept =
     units
     |> List.filter_map (fun u ->
-           let sg = Signature.extract u.ucfg in
+           let sg = Signature.extract ~ext:(Filename.extension u.ufile) u.ucfg in
            if Signature.size sg < min_features then None
            else (
              ignore
