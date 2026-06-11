@@ -59,7 +59,7 @@ nonna rank <pairs.tsv> <corpus...>         # MRR / recall@k through the pipeline
 # servers
 nonna lsp                                  # stdio LSP (diagnostics, find-similar)
 nonna mcp [root]                           # stdio MCP (per-session)
-nonna serve [root] [-p 8976]               # HTTP MCP (shared warm index)
+nonna serve [root] [-p 8976]               # HTTP MCP + duplication explorer UI
 
 # global flags: --profile structural|full, --iters N, --with ch1,ch2
 ```
@@ -84,6 +84,11 @@ does, plus more").
 The corpus root is indexed at startup (workspace first, then cargo deps + std
 from per-`crate@version` caches under `~/.cache/nonna/sigdb` — first dep index
 ~1 min, warm loads < 0.5 s). Check `status` before trusting empty results.
+
+`nonna serve` also hosts the **duplication explorer** at `http://127.0.0.1:8976/`:
+all similar pairs in the corpus with a threshold slider, name/file/min-size
+filters, and a keyboard-navigable side-by-side function diff — both a dedup
+navigator and a way to eyeball how the engine scores real code.
 
 ## 🧑‍💻 Editor integration (VSCode)
 

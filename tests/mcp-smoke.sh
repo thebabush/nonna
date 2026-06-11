@@ -44,4 +44,6 @@ echo "$HOUT" | grep -q 'rename-invariant' && echo "ok   http: initialize + instr
 HOUT=$(curl -s -X POST "http://127.0.0.1:$PORT/mcp" -H 'Content-Type: application/json' \
   -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"status","arguments":{}}}')
 echo "$HOUT" | grep -q 'indexed functions' && echo "ok   http: tools/call status" || { echo "FAIL http: tools/call"; fail=1; }
+curl -s "http://127.0.0.1:$PORT/" | grep -q 'duplication explorer' && echo "ok   http: explorer UI" || { echo "FAIL http: explorer UI"; fail=1; }
+curl -s "http://127.0.0.1:$PORT/api/pairs" | grep -q '"pairs"' && echo "ok   http: explorer pairs API" || { echo "FAIL http: pairs API"; fail=1; }
 exit $fail
