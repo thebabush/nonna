@@ -11,6 +11,7 @@ type meta = {
   file : string;
   line_start : int;
   line_end : int;
+  code_lines : int; (* lines carrying code tokens (no comments/docstrings) *)
 }
 
 type hit = {
@@ -56,5 +57,13 @@ val query :
 
 val duplicates : t -> threshold:float -> (meta * meta * float) list
 
-val duplicates_full :
-  t -> threshold:float -> (meta * meta * float * float) list
+type pair = {
+  a : meta;
+  b : meta;
+  a_features : int; (* signature sizes — "how much evidence" per side *)
+  b_features : int;
+  j : float; (* weighted jaccard *)
+  c : float; (* containment, max of both directions *)
+}
+
+val duplicates_full : t -> threshold:float -> pair list

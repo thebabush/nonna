@@ -7,8 +7,10 @@ module Engine = Nonna_index.Engine
 type unit_info = {
   uname : string;
   ufile : string;
+  ulang : Lang.t;
   uline_start : int;
   uline_end : int;
+  ucode_lines : int; (* lines carrying code tokens; comments/docstrings out *)
   ucfg : IL.fun_cfg;
   utokens : string list; (* body token contents (comment/ws-free) *)
 }
@@ -20,6 +22,44 @@ let entity_name (ent_opt : G.entity option) : string =
       s
   | Some _ -> "<entity>"
   | None -> "<lambda>"
+
+(* Lines of actual code in a body: distinct lines carrying at least one AST
+   token. Comments and blank lines carry no tokens, so they never count;
+   docstring-shaped statements (a bare string-literal expression statement)
+   are excluded explicitly — a function that is one docstring and one return
+   is 2 code lines no matter how long the docstring. *)
+let code_lines_of_body (body : G.stmt) : int =
+  let pos_of tok =
+    match Tok.loc_of_tok tok with
+    | Ok l -> Some (l.Tok.pos.Pos.line, l.Tok.pos.Pos.bytepos)
+    | Error _ -> None
+  in
+  let doc_pos = Hashtbl.create 4 in
+  let v =
+    object
+      inherit [_] G.iter_no_id_info as super
+
+      method! visit_stmt env st =
+        (match st.G.s with
+        | G.ExprStmt ({ G.e = G.L (G.String _); _ }, _) ->
+            AST_generic_helpers.ii_of_any (G.S st)
+            |> List.iter (fun tok ->
+                   Option.iter
+                     (fun p -> Hashtbl.replace doc_pos p ())
+                     (pos_of tok))
+        | _ -> ());
+        super#visit_stmt env st
+    end
+  in
+  v#visit_stmt () body;
+  let lines = Hashtbl.create 16 in
+  AST_generic_helpers.ii_of_any (G.S body)
+  |> List.iter (fun tok ->
+         match pos_of tok with
+         | Some ((line, _) as p) ->
+             if not (Hashtbl.mem doc_pos p) then Hashtbl.replace lines line ()
+         | None -> ());
+  Hashtbl.length lines
 
 let units_of_file (file : string) : unit_info list =
   let path = Fpath.v file in
@@ -34,9 +74,8 @@ let units_of_file (file : string) : unit_info list =
   Visit_function_defs.visit
     (fun ent_opt fdef ->
       let name = entity_name ent_opt in
-      let body_any =
-        G.S (AST_generic_helpers.funcbody_to_stmt fdef.G.fbody)
-      in
+      let body_stmt = AST_generic_helpers.funcbody_to_stmt fdef.G.fbody in
+      let body_any = G.S body_stmt in
       let line_start, line_end =
         match AST_generic_helpers.range_of_any_opt body_any with
         | Some (l1, l2) -> (l1.Tok.pos.Pos.line, l2.Tok.pos.Pos.line)
@@ -48,8 +87,10 @@ let units_of_file (file : string) : unit_info list =
             {
               uname = name;
               ufile = file;
+              ulang = lang;
               uline_start = line_start;
               uline_end = line_end;
+              ucode_lines = code_lines_of_body body_stmt;
               ucfg = fcfg;
               utokens = Nonna_features.Il_util.token_strings_of_any body_any;
             }
@@ -134,6 +175,16 @@ let loc_str (u : unit_info) =
 (* Units below this many features are too small to match meaningfully. *)
 let min_features = 5
 
+(* The one place an Engine.meta is built from a unit. *)
+let meta_of (u : unit_info) : Engine.meta =
+  {
+    Engine.name = u.uname;
+    file = u.ufile;
+    line_start = u.uline_start;
+    line_end = u.uline_end;
+    code_lines = u.ucode_lines;
+  }
+
 let is_lambda (u : unit_info) : bool =
   String.length u.uname >= 8
   && String.sub u.uname (String.length u.uname - 8) 8 = "<lambda>"
@@ -171,18 +222,10 @@ let index_units (units : unit_info list) :
   let kept =
     units
     |> List.filter_map (fun u ->
-           let sg = Signature.extract ~ext:(Filename.extension u.ufile) u.ucfg in
+           let sg = Signature.extract ~lang:u.ulang u.ucfg in
            if Signature.size sg < min_features then None
            else (
-             ignore
-               (Engine.add b
-                  {
-                    Engine.name = u.uname;
-                    file = u.ufile;
-                    line_start = u.uline_start;
-                    line_end = u.uline_end;
-                  }
-                  sg);
+             ignore (Engine.add b (meta_of u) sg);
              Some (u, sg)))
   in
   (Engine.freeze b, kept)

@@ -101,20 +101,9 @@ let cache_dir () : string =
 let index_dir (dir : string) : Sigdb.entry list =
   Units.units_of_paths [ dir ]
   |> List.filter_map (fun (u : Units.unit_info) ->
-         let sg = Signature.extract ~ext:(Filename.extension u.Units.ufile) u.Units.ucfg in
+         let sg = Signature.extract ~lang:u.Units.ulang u.Units.ucfg in
          if Signature.size sg < Units.min_features then None
-         else
-           Some
-             {
-               Sigdb.meta =
-                 {
-                   Engine.name = u.Units.uname;
-                   file = u.Units.ufile;
-                   line_start = u.Units.uline_start;
-                   line_end = u.Units.uline_end;
-                 };
-               sg;
-             })
+         else Some { Sigdb.meta = Units.meta_of u; sg })
 
 (* Load a dep's sigdb from cache, indexing + caching on miss. *)
 let entries_of_dep (d : dep) : Sigdb.entry list =

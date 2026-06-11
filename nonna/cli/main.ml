@@ -20,7 +20,7 @@ let cmd_features (file : string) =
   Units.units_of_file file
   |> List.iter (fun (u : Units.unit_info) ->
          let feats = Dfg.extract u.Units.ucfg in
-         let sg = Signature.extract ~ext:(Filename.extension u.Units.ufile) u.Units.ucfg in
+         let sg = Signature.extract ~lang:u.Units.ulang u.Units.ucfg in
          Printf.printf "=== %s (%s) — %d dfg features, %d total\n"
            u.Units.uname (Units.loc_str u) (List.length feats)
            (Signature.size sg);
@@ -50,21 +50,14 @@ let cmd_query (corpus : string list) (draft : string) (threshold : float)
   Printf.printf "corpus: %d units indexed\n" (List.length kept);
   Units.units_of_file draft
   |> List.iter (fun (u : Units.unit_info) ->
-         let sg = Signature.extract ~ext:(Filename.extension u.Units.ufile) u.Units.ucfg in
+         let sg = Signature.extract ~lang:u.Units.ulang u.Units.ucfg in
          Printf.printf "\n── %s (%s) — %d features\n" u.Units.uname
            (Units.loc_str u) (Signature.size sg);
          if Signature.size sg < Units.min_features then
            print_endline "  (too small to match)"
          else
            let hits =
-             let self_m =
-               {
-                 Engine.name = u.Units.uname;
-                 file = u.Units.ufile;
-                 line_start = u.Units.uline_start;
-                 line_end = u.Units.uline_end;
-               }
-             in
+             let self_m = Units.meta_of u in
              Engine.query eng sg ~threshold ~max_results:top_k
              (* the draft may itself be inside the corpus (drop self) or be
                 a nested def queried against its container (tautological) *)
@@ -110,7 +103,7 @@ let cmd_graph (file : string) (fn_filter : string option) (outdir : string) =
   selected
   |> List.iter (fun (u : Units.unit_info) ->
          let g =
-           Dfg.graph_of ~fc:(Dfg.base_cfg_for (Filename.extension file))
+           Dfg.graph_of ~fc:(Dfg.base_cfg_for u.Units.ulang)
              u.Units.ucfg
          in
          let source =

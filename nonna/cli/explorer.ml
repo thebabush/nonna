@@ -18,7 +18,7 @@ let meta_json (m : Engine.meta) : J.t =
       ("file", `String m.Engine.file);
       ("start", `Int m.Engine.line_start);
       ("end", `Int m.Engine.line_end);
-      ("lines", `Int (m.Engine.line_end - m.Engine.line_start + 1));
+      ("lines", `Int m.Engine.code_lines);
     ]
 
 let pairs_json (eng : Engine.t) ~(ready : bool) : J.t =
@@ -44,13 +44,15 @@ let pairs_json (eng : Engine.t) ~(ready : bool) : J.t =
             ( "pairs",
               `List
                 (List.map
-                   (fun (a, b, jac, c) ->
+                   (fun (p : Engine.pair) ->
                      `Assoc
                        [
-                         ("a", meta_json a);
-                         ("b", meta_json b);
-                         ("j", `Float jac);
-                         ("c", `Float c);
+                         ("a", meta_json p.Engine.a);
+                         ("b", meta_json p.Engine.b);
+                         ("af", `Int p.Engine.a_features);
+                         ("bf", `Int p.Engine.b_features);
+                         ("j", `Float p.Engine.j);
+                         ("c", `Float p.Engine.c);
                        ])
                    ps) );
             ("truncated", `Bool truncated);
@@ -121,7 +123,8 @@ main { flex:1; display:flex; min-height:0; }
     <span id=thv>0.70</span></label>
   <input id=fname placeholder="function name…" size=14>
   <input id=ffile placeholder="file…" size=14>
-  <label>min lines <input id=fmin type=number value=0 min=0 style="width:60px"></label>
+  <label>min code lines <input id=fmin type=number value=0 min=0 style="width:60px"></label>
+  <label>min features <input id=ffeat type=number value=0 min=0 style="width:60px"></label>
   <span id=count></span>
 </header>
 <main>
@@ -153,12 +156,14 @@ function filt() {
   const t = +$('th').value / 100,
         fn = $('fname').value.toLowerCase(),
         ff = $('ffile').value.toLowerCase(),
-        mn = +$('fmin').value || 0;
+        mn = +$('fmin').value || 0,
+        mf = +$('ffeat').value || 0;
   return PAIRS.map((p, i) => ({p, i})).filter(({p}) =>
     Math.max(p.j, p.c) >= t
     && (!fn || p.a.name.toLowerCase().includes(fn) || p.b.name.toLowerCase().includes(fn))
     && (!ff || p.a.file.toLowerCase().includes(ff) || p.b.file.toLowerCase().includes(ff))
-    && Math.min(p.a.lines, p.b.lines) >= mn);
+    && Math.min(p.a.lines, p.b.lines) >= mn
+    && Math.min(p.af, p.bf) >= mf);
 }
 
 const short = f => f.split('/').slice(-2).join('/');
@@ -243,7 +248,7 @@ window.addEventListener('keydown', e => {
 });
 
 $('th').oninput = () => { $('thv').textContent = (+$('th').value / 100).toFixed(2); render(); };
-for (const id of ['fname', 'ffile', 'fmin']) $(id).oninput = render;
+for (const id of ['fname', 'ffile', 'fmin', 'ffeat']) $(id).oninput = render;
 load();
 </script></body></html>
 |}
