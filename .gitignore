@@ -1,0 +1,11 @@
+# Installed dependencies and compiler output
+node_modules/
+target/
+
+_build/
+*.install
+.DS_Store
+viz-out/
+bench-out/
+pairs.tsv
+.rrr
