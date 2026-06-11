@@ -277,10 +277,20 @@ vendor/opengrep               # pinned engine (git submodule @ 8ee180dc)
 - **N1 — Reuse precision.** The "call this" gate: thresholds, containment weighting,
   `is_public_api`/visibility filtering, callability ranking.
 - **N5 — Rust-specific granularity.** Trait/impl/generic modeling beyond flat units.
-- **N8 — Per-language tuning.** Defaults are tuned on a Rust-only benchmark (D1
-  prioritizes Rust anyway). To tune another language: extend the miner's keyword
-  list, mine multi-version packages from npm/pypi caches, re-run `tests/sweep.sh`.
-  The 4-language sanity suite is the regression floor meanwhile.
+- **N8 — Per-language tuning.** Partially answered (2026-06-11): the Python
+  benchmark exists (`tests/mine-pypi.sh`, 28 package-versions, 11.4k pairs; the
+  miner's token normalizer is language-aware via per-extension keyword tables).
+  Baseline with Rust-tuned defaults is already strong (evolved MRR 0.86 vs
+  Rust's 0.72 — fewer types means version edits perturb less); judge
+  correlations mirror Rust (n=148: structure +0.78, purpose +0.64). **Sweep
+  verdict: optimal channels are per-language.** Rust: `call_names+int_values`
+  (strings cost renamed −5pp). Python: those PLUS `string_values+field_names`
+  — ALL MRR 0.955→0.969, evolved MRR 0.862→0.929, samefile FPR(max-gate)
+  0.068→0.036; `ty_descrs` actively hurts (annotation drift breaks even exact
+  pairs). Depth 1 optimal/flat in both. Remaining (issue #1): wire
+  per-language base configs into extraction; kernel/C benchmark; JS/Go.
+  Python-specific: unittest↔pytest assert migrations dominate the evolved
+  tail — normalization pass endorsed.
 - *(resolved: N2 → D7, N6 → D11, N7 → closure grafting)*
 
 ## Known levers, deliberately not pulled yet
