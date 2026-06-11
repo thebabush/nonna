@@ -658,6 +658,9 @@ let handle_http_conn (fd : Unix.file_descr) : unit =
   (try Unix.close fd with _ -> ())
 
 let serve (root : string) (port : int) : unit =
+  (* a client hanging up mid-response must be an EPIPE in that connection's
+     thread (already caught there), not a SIGPIPE killing the process *)
+  Sys.set_signal Sys.sigpipe Sys.Signal_ignore;
   index_async root;
   let sock = Unix.socket Unix.PF_INET Unix.SOCK_STREAM 0 in
   Unix.setsockopt sock Unix.SO_REUSEADDR true;
