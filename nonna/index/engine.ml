@@ -105,6 +105,32 @@ let query ?(exclude = -1) (t : t) (qsig : Signature.t) ~(threshold : float)
            (Float.max a.jaccard a.containment, a.jaccard))
   |> List.filteri (fun i _ -> i < max_results)
 
+(* All intra-index pairs with jaccard AND containment (max of both
+   directions) — the duplication-explorer feed. Gated on max(j, c). *)
+let duplicates_full (t : t) ~(threshold : float) :
+    (meta * meta * float * float) list =
+  let seen = Hashtbl.create 256 in
+  let out = ref [] in
+  for fid = 0 to t.n - 1 do
+    let sg, meta = t.sigs.(fid) in
+    candidates t sg
+    |> List.iter (fun cand ->
+           if cand <> fid then (
+             let key = (min fid cand, max fid cand) in
+             if not (Hashtbl.mem seen key) then (
+               Hashtbl.replace seen key ();
+               let csg, cmeta = t.sigs.(cand) in
+               let j = Signature.jaccard sg csg in
+               let c =
+                 Float.max
+                   (Signature.containment ~query:sg csg)
+                   (Signature.containment ~query:csg sg)
+               in
+               if Float.max j c >= threshold then
+                 out := (meta, cmeta, j, c) :: !out)))
+  done;
+  List.sort (fun (_, _, a, _) (_, _, b, _) -> compare b a) !out
+
 (* All intra-index pairs above the threshold ("nonna dupes"). *)
 let duplicates (t : t) ~(threshold : float) : (meta * meta * float) list =
   let seen = Hashtbl.create 256 in

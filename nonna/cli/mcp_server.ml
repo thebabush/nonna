@@ -555,6 +555,70 @@ let http_response (oc : out_channel) ?(status = "200 OK")
     status content_type (String.length body) body;
   flush oc
 
+let percent_decode (s : string) : string =
+  let b = Buffer.create (String.length s) in
+  let n = String.length s in
+  let rec go i =
+    if i < n then
+      if s.[i] = '%' && i + 2 < n then (
+        (match int_of_string_opt ("0x" ^ String.sub s (i + 1) 2) with
+        | Some c -> Buffer.add_char b (Char.chr c)
+        | None -> Buffer.add_char b s.[i]);
+        go (i + 3))
+      else (
+        Buffer.add_char b (if s.[i] = '+' then ' ' else s.[i]);
+        go (i + 1))
+  in
+  go 0;
+  Buffer.contents b
+
+(* "/api/fn?file=..&start=1" -> ("/api/fn", [("file", ".."); ("start", "1")]) *)
+let split_path_query (target : string) : string * (string * string) list =
+  match String.index_opt target '?' with
+  | None -> (target, [])
+  | Some i ->
+      let path = String.sub target 0 i in
+      let q = String.sub target (i + 1) (String.length target - i - 1) in
+      let params =
+        String.split_on_char '&' q
+        |> List.filter_map (fun kv ->
+               match String.index_opt kv '=' with
+               | None -> None
+               | Some e ->
+                   Some
+                     ( String.sub kv 0 e,
+                       percent_decode
+                         (String.sub kv (e + 1) (String.length kv - e - 1)) ))
+      in
+      (path, params)
+
+(* GET routes: the duplication explorer UI + its JSON API. *)
+let handle_get (oc : out_channel) (target : string) : unit =
+  let path, params = split_path_query target in
+  match path with
+  | "/" | "/index.html" ->
+      http_response oc ~content_type:"text/html; charset=utf-8" Explorer.html
+  | "/api/pairs" ->
+      http_response oc
+        (J.to_string (Explorer.pairs_json !engine ~ready:!indexing_done))
+  | "/api/fn" -> (
+      match
+        ( List.assoc_opt "file" params,
+          Option.bind (List.assoc_opt "start" params) int_of_string_opt,
+          Option.bind (List.assoc_opt "end" params) int_of_string_opt )
+      with
+      | Some file, Some start, Some stop ->
+          http_response oc
+            (J.to_string (Explorer.fn_json !engine ~file ~start ~stop))
+      | _ ->
+          http_response oc ~status:"400 Bad Request"
+            {|{"error":"file, start, end required"}|})
+  | _ ->
+      http_response oc ~content_type:"text/plain"
+        (Printf.sprintf "nonna mcp: %d functions indexed (%s)\n"
+           (Engine.size !engine)
+           (if !indexing_done then "ready" else "indexing"))
+
 let handle_http_conn (fd : Unix.file_descr) : unit =
   let ic = Unix.in_channel_of_descr fd in
   let oc = Unix.out_channel_of_descr fd in
@@ -587,10 +651,13 @@ let handle_http_conn (fd : Unix.file_descr) : unit =
              (J.to_string
                 (error_msg `Null (-32700) (Printexc.to_string e))))
      else
-       http_response oc ~content_type:"text/plain"
-         (Printf.sprintf "nonna mcp: %d functions indexed (%s)\n"
-            (Engine.size !engine)
-            (if !indexing_done then "ready" else "indexing"))
+       (* GET <target> HTTP/1.1 -> explorer UI / JSON API *)
+       let target =
+         match String.split_on_char ' ' request_line with
+         | _ :: t :: _ -> t
+         | _ -> "/"
+       in
+       handle_get oc target
    with _ -> ());
   (try Unix.close fd with _ -> ())
 
@@ -600,7 +667,10 @@ let serve (root : string) (port : int) : unit =
   Unix.setsockopt sock Unix.SO_REUSEADDR true;
   Unix.bind sock (Unix.ADDR_INET (Unix.inet_addr_loopback, port));
   Unix.listen sock 16;
-  Printf.eprintf "nonna mcp: http://127.0.0.1:%d/mcp (root: %s)\n%!" port root;
+  Printf.eprintf
+    "nonna: explorer http://127.0.0.1:%d/ | mcp http://127.0.0.1:%d/mcp \
+(root: %s)\n%!"
+    port port root;
   while true do
     let fd, _ = Unix.accept sock in
     ignore (Thread.create handle_http_conn fd)
