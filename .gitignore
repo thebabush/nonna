@@ -9,3 +9,4 @@ viz-out/
 bench-out/
 pairs.tsv
 .rrr
+bench-py/

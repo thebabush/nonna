@@ -30,10 +30,28 @@ let rust_keywords =
     "unsafe"; "use"; "where"; "while"; "union";
   ]
 
-let kw_tbl =
+let python_keywords =
+  [
+    "False"; "None"; "True"; "and"; "as"; "assert"; "async"; "await";
+    "break"; "class"; "continue"; "def"; "del"; "elif"; "else"; "except";
+    "finally"; "for"; "from"; "global"; "if"; "import"; "in"; "is";
+    "lambda"; "nonlocal"; "not"; "or"; "pass"; "raise"; "return"; "try";
+    "while"; "with"; "yield"; "self"; "cls";
+  ]
+
+let kw_tbl_of (kws : string list) =
   let t = Hashtbl.create 64 in
-  List.iter (fun k -> Hashtbl.replace t k ()) rust_keywords;
+  List.iter (fun k -> Hashtbl.replace t k ()) kws;
   t
+
+let rust_kw_tbl = kw_tbl_of rust_keywords
+let python_kw_tbl = kw_tbl_of python_keywords
+
+(* ground-truth normalization must speak the file's language *)
+let kw_tbl_for (file : string) =
+  match Filename.extension file with
+  | ".py" -> python_kw_tbl
+  | _ -> rust_kw_tbl
 
 let is_ident (s : string) =
   s <> ""
@@ -45,7 +63,7 @@ let is_ident (s : string) =
 (* Rename variable-position identifiers to "$"; keep identifiers wherever the
    ENGINE keeps them — call/path position, macro names, and field position
    (after "."). Ground-truth invariance must mirror the claimed invariance. *)
-let normalize (toks : string array) : string list =
+let normalize ~kw_tbl (toks : string array) : string list =
   let n = Array.length toks in
   List.init n (fun i ->
       let t = toks.(i) in
@@ -128,7 +146,7 @@ let collect (paths : string list) : uent list =
            let toks = Array.of_list u.Units.utokens in
            if Array.length toks < min_tokens then None
            else
-             let norm = normalize toks in
+             let norm = normalize ~kw_tbl:(kw_tbl_for u.Units.ufile) toks in
              Some
                {
                  file = u.Units.ufile;
