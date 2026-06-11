@@ -1,0 +1,44 @@
+{
+  "name": "nonna",
+  "displayName": "nonna — structural code similarity",
+  "description": "Surfaces structurally similar functions (reuse-before-write) as diagnostics.",
+  "version": "0.0.1",
+  "publisher": "nonna-dev",
+  "engines": { "vscode": "^1.85.0" },
+  "categories": ["Linters"],
+  "main": "./extension.js",
+  "activationEvents": [
+    "onLanguage:rust",
+    "onLanguage:python",
+    "onLanguage:javascript",
+    "onLanguage:typescript",
+    "onLanguage:go"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "nonna.findSimilar",
+        "title": "nonna: Find Similar Functions"
+      }
+    ],
+    "configuration": {
+      "title": "nonna",
+      "properties": {
+        "nonna.serverPath": {
+          "type": "string",
+          "default": "nonna",
+          "description": "Path to the nonna binary (e.g. /path/to/nonna-v2/_build/default/nonna/cli/main.exe)"
+        },
+        "nonna.profile": {
+          "type": "string",
+          "enum": ["structural", "full"],
+          "default": "structural",
+          "description": "Feature profile (D14): structural = name-free hashing; full = adds name/value/type channels"
+        }
+      }
+    }
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1"
+  }
+}

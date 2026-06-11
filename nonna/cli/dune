@@ -1,0 +1,17 @@
+(executable
+ (name main)
+ (libraries
+   yojson
+   threads.posix
+   unix
+   commons
+   lib_parsing
+   ast_generic
+   semgrep.core
+   semgrep.il
+   semgrep.parsing
+   semgrep.parsing_languages
+   pfff-lang_GENERIC-naming
+   pfff-lang_GENERIC-analyze
+   nonna_features
+   nonna_index))

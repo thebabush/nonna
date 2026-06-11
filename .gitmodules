@@ -1,0 +1,3 @@
+[submodule "vendor/opengrep"]
+	path = vendor/opengrep
+	url = https://github.com/opengrep/opengrep.git
