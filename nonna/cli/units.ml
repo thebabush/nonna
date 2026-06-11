@@ -167,7 +167,7 @@ let file_slice (path : string) (first : int) (last : int) : string list =
 
 let index_units (units : unit_info list) :
     Engine.t * (unit_info * Signature.t) list =
-  let eng = Engine.create () in
+  let b = Engine.create () in
   let kept =
     units
     |> List.filter_map (fun u ->
@@ -175,7 +175,7 @@ let index_units (units : unit_info list) :
            if Signature.size sg < min_features then None
            else (
              ignore
-               (Engine.add eng
+               (Engine.add b
                   {
                     Engine.name = u.uname;
                     file = u.ufile;
@@ -185,4 +185,4 @@ let index_units (units : unit_info list) :
                   sg);
              Some (u, sg)))
   in
-  (eng, kept)
+  (Engine.freeze b, kept)
