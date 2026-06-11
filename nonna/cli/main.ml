@@ -172,6 +172,8 @@ let parse_flags (args : string list) : string list * (string * string) list =
     | ("-o" | "--out") :: v :: rest -> go pos (("o", v) :: flags) rest
     | ("-p" | "--port") :: v :: rest -> go pos (("p", v) :: flags) rest
     | "--fn" :: v :: rest -> go pos (("fn", v) :: flags) rest
+    | "--sample" :: v :: rest -> go pos (("sample", v) :: flags) rest
+    | "--ext" :: v :: rest -> go pos (("ext", v) :: flags) rest
     | x :: rest -> go (x :: pos) flags rest
   in
   go [] [] args
@@ -187,6 +189,7 @@ let usage () =
     \  nonna query <corpus...> -- <draft.rs> [-t 0.25] [-k 5]\n\
     \  nonna graph <file> [--fn NAME] [-o DIR]   (DOT per propagation round)\n\
     \  nonna dump-il <file> [--fn NAME]          (compact IL CFG)\n\
+    \  nonna parse-stats <paths...> [--sample N] [--ext .c]  (IL quality probe)\n\
     \  nonna mine <paths...> [-o pairs.tsv]      (ground-truth pair mining)\n\
     \  nonna eval <pairs.tsv> [-o scores.tsv]\n\
     \  nonna rank <pairs.tsv> <corpus paths...>  (MRR / recall@k, end to end)\n\
@@ -254,6 +257,12 @@ let () =
       let pos, flags = parse_flags rest in
       if pos = [] then usage ();
       cmd_dupes pos (flag flags "t" 0.5 float_of_string)
+  | "parse-stats" :: rest ->
+      let pos, flags = parse_flags rest in
+      if pos = [] then usage ();
+      Stats.run pos
+        (flag flags "sample" 0 int_of_string)
+        (List.assoc_opt "ext" flags)
   | "query" :: rest -> (
       let pos, flags = parse_flags rest in
       match split_ddash [] pos with

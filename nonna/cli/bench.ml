@@ -44,13 +44,26 @@ let kw_tbl_of (kws : string list) =
   List.iter (fun k -> Hashtbl.replace t k ()) kws;
   t
 
+let c_keywords =
+  [
+    "auto"; "break"; "case"; "char"; "const"; "continue"; "default"; "do";
+    "double"; "else"; "enum"; "extern"; "float"; "for"; "goto"; "if";
+    "inline"; "int"; "long"; "register"; "restrict"; "return"; "short";
+    "signed"; "sizeof"; "static"; "struct"; "switch"; "typedef"; "union";
+    "unsigned"; "void"; "volatile"; "while";
+    (* ubiquitous macro spellings, keyword-like in practice *)
+    "NULL"; "true"; "false"; "bool";
+  ]
+
 let rust_kw_tbl = kw_tbl_of rust_keywords
 let python_kw_tbl = kw_tbl_of python_keywords
+let c_kw_tbl = kw_tbl_of c_keywords
 
 (* ground-truth normalization must speak the file's language *)
 let kw_tbl_for (file : string) =
   match Filename.extension file with
   | ".py" -> python_kw_tbl
+  | ".c" | ".h" -> c_kw_tbl
   | _ -> rust_kw_tbl
 
 let is_ident (s : string) =
@@ -71,7 +84,9 @@ let normalize ~kw_tbl (toks : string array) : string list =
       else
         let next = if i + 1 < n then toks.(i + 1) else "" in
         let prev = if i > 0 then toks.(i - 1) else "" in
-        if next = "(" || next = "::" || prev = "::" || next = "!" || prev = "."
+        if
+          next = "(" || next = "::" || prev = "::" || next = "!" || prev = "."
+          || prev = "->"
         then t
         else "$")
 
