@@ -103,7 +103,7 @@ let index_workspace_async (root : string) : unit =
            let eng = Engine.create () in
            Units.units_of_paths [ root ]
            |> List.iter (fun (u : Units.unit_info) ->
-                  let sg = Signature.extract u.Units.ucfg in
+                  let sg = Signature.extract ~ext:(Filename.extension u.Units.ufile) u.Units.ucfg in
                   if Signature.size sg >= Units.min_features then
                     ignore
                       (Engine.add eng
@@ -131,7 +131,7 @@ let line_range (line0 : int) : J.t =
 let diagnostics_for (path : string) : J.t list =
   Units.units_of_file path
   |> List.filter_map (fun (u : Units.unit_info) ->
-         let sg = Signature.extract u.Units.ucfg in
+         let sg = Signature.extract ~ext:(Filename.extension u.Units.ufile) u.Units.ucfg in
          if Signature.size sg < Units.min_features then None
          else
            Engine.query !engine sg ~threshold:report_threshold ~max_results:5
@@ -218,7 +218,7 @@ let find_similar (uri : string) (line0 : int) : J.t =
   match Units.unit_at path (line0 + 1) with
   | None -> `Assoc [ ("query", `Null); ("hits", `List []) ]
   | Some u ->
-      let sg = Signature.extract u.Units.ucfg in
+      let sg = Signature.extract ~ext:(Filename.extension u.Units.ufile) u.Units.ucfg in
       let hits =
         Engine.query !engine sg ~threshold:0.2 ~max_results:15
         |> List.filter (fun (h : Engine.hit) ->

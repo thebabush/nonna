@@ -101,7 +101,7 @@ let cache_dir () : string =
 let index_dir (dir : string) : Sigdb.entry list =
   Units.units_of_paths [ dir ]
   |> List.filter_map (fun (u : Units.unit_info) ->
-         let sg = Signature.extract u.Units.ucfg in
+         let sg = Signature.extract ~ext:(Filename.extension u.Units.ufile) u.Units.ucfg in
          if Signature.size sg < Units.min_features then None
          else
            Some

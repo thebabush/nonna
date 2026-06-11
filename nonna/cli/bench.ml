@@ -376,7 +376,7 @@ let rank (pairs_file : string) (corpus_paths : string list) =
   let sig_of : (int, Signature.t) Hashtbl.t = Hashtbl.create 8192 in
   Units.units_of_paths corpus_paths
   |> List.iter (fun (u : Units.unit_info) ->
-         let sg = Signature.extract u.Units.ucfg in
+         let sg = Signature.extract ~ext:(Filename.extension u.Units.ufile) u.Units.ucfg in
          if Signature.size sg >= Units.min_features then (
            let fid =
              Engine.add eng
@@ -486,7 +486,7 @@ let eval ?(scores_out : string option) (pairs_file : string) =
              Units.units_of_file file
              |> List.iter (fun (u : Units.unit_info) ->
                     Hashtbl.replace t u.Units.uline_start
-                      (Signature.extract u.Units.ucfg))
+                      (Signature.extract ~ext:(Filename.extension u.Units.ufile) u.Units.ucfg))
            with _ -> ());
           Hashtbl.replace cache file t;
           t

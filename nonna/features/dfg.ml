@@ -141,6 +141,18 @@ let keep_value (fc : cfg) (kind : string) : bool =
 let base_cfg : cfg ref =
   ref { structural_cfg with call_names = true; int_values = true }
 
+(* Per-language base (N8 sweeps, issue #2): channel optima differ by
+   language. Python additionally wants string_values + field_names
+   (stringly-typed: literals and attribute names are API identity there;
+   ALL MRR 0.955→0.969, evolved 0.862→0.929, samefile FPR halved) — the
+   same channels COST recall on Rust. Composed on top of the global
+   base_cfg so --with ablations still apply everywhere. *)
+let base_cfg_for (ext : string) : cfg =
+  let b = !base_cfg in
+  match ext with
+  | ".py" -> { b with string_values = true; field_names = true }
+  | _ -> b
+
 (* compact tag for cache keys / reports *)
 let cfg_bits (c : cfg) : int =
   (if c.call_names then 1 else 0)

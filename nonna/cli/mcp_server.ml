@@ -72,7 +72,7 @@ let index_async (root : string) : unit =
             let eng = Engine.create () in
             Units.units_of_paths [ root ]
             |> List.iter (fun (u : Units.unit_info) ->
-                   let sg = Signature.extract u.Units.ucfg in
+                   let sg = Signature.extract ~ext:(Filename.extension u.Units.ufile) u.Units.ucfg in
                    if Signature.size sg >= Units.min_features then
                      ignore
                        (Engine.add eng
@@ -188,7 +188,7 @@ let hit_block (h : Engine.hit) : string =
 
 let query_unit (u : Units.unit_info) ~(threshold : float) ~(top_k : int) :
     Engine.hit list =
-  let sg = Signature.extract u.Units.ucfg in
+  let sg = Signature.extract ~ext:(Filename.extension u.Units.ufile) u.Units.ucfg in
   if Signature.size sg < Units.min_features then []
   else
     Engine.query !engine sg ~threshold ~max_results:(top_k + 1)
@@ -262,10 +262,18 @@ let diff_functions (args : J.t) : J.t =
   match (resolve_side args "a", resolve_side args "b") with
   | Error e, _ | _, Error e -> tool_text ~is_error:true e
   | Ok (la, ua), Ok (lb, ub) ->
-      let sa = Signature.extract ua.Units.ucfg in
-      let sb = Signature.extract ub.Units.ucfg in
-      let ga = Dfg.graph_of ua.Units.ucfg in
-      let gb = Dfg.graph_of ub.Units.ucfg in
+      let sa = Signature.extract ~ext:(Filename.extension ua.Units.ufile) ua.Units.ucfg in
+      let sb = Signature.extract ~ext:(Filename.extension ub.Units.ufile) ub.Units.ucfg in
+      let ga =
+        Dfg.graph_of
+          ~fc:(Dfg.base_cfg_for (Filename.extension ua.Units.ufile))
+          ua.Units.ucfg
+      in
+      let gb =
+        Dfg.graph_of
+          ~fc:(Dfg.base_cfg_for (Filename.extension ub.Units.ufile))
+          ub.Units.ucfg
+      in
       let text =
         String.concat "\n\n"
           [
