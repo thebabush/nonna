@@ -290,3 +290,11 @@ vendor/opengrep               # pinned engine (git submodule @ 8ee180dc)
 - Float-value channel on a float-heavy corpus; per-language sweeps (N8).
 - Loop-idiom normalization (index-while ↔ foreach) if cross-style recall matters.
 - Incremental index updates (Phase 4).
+- Embedding-proposed benchmark pairs: the token miner only proves easy
+  relationships (exact/renamed), so positives are biased toward what the
+  engine is already good at. Pipeline: code-embedding model proposes
+  high-cosine cross-package pairs not already token-labeled → LLM judge
+  verifies → new `semantic` benchmark kind (reported separately; "two
+  models agreed" epistemics, never mixed with provable kinds). Also audits
+  negatives. Embeddings stay out of the ENGINE (candidate miss is already
+  ≤1.6%); this is purely a labeling instrument.
