@@ -135,11 +135,17 @@ let diagnostics_for (path : string) : J.t list =
          let sg = Signature.extract ~ext:(Filename.extension u.Units.ufile) u.Units.ucfg in
          if Signature.size sg < Units.min_features then None
          else
+           let self_m =
+             {
+               Engine.name = u.Units.uname;
+               file = path;
+               line_start = u.Units.uline_start;
+               line_end = u.Units.uline_end;
+             }
+           in
            Engine.query !engine sg ~threshold:report_threshold ~max_results:5
            |> List.filter (fun (h : Engine.hit) ->
-                  not
-                    (h.Engine.meta.Engine.file = path
-                    && h.Engine.meta.Engine.line_start = u.Units.uline_start))
+                  not (Engine.nests self_m h.Engine.meta))
            |> function
            | [] -> None
            | best :: _ as hits ->
@@ -221,11 +227,17 @@ let find_similar (uri : string) (line0 : int) : J.t =
   | Some u ->
       let sg = Signature.extract ~ext:(Filename.extension u.Units.ufile) u.Units.ucfg in
       let hits =
+        let self_m =
+          {
+            Engine.name = u.Units.uname;
+            file = path;
+            line_start = u.Units.uline_start;
+            line_end = u.Units.uline_end;
+          }
+        in
         Engine.query !engine sg ~threshold:0.2 ~max_results:15
         |> List.filter (fun (h : Engine.hit) ->
-               not
-                 (h.Engine.meta.Engine.file = path
-                 && h.Engine.meta.Engine.line_start = u.Units.uline_start))
+               not (Engine.nests self_m h.Engine.meta))
         |> List.map (fun (h : Engine.hit) ->
                let m = h.Engine.meta in
                `Assoc

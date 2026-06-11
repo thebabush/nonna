@@ -27,6 +27,14 @@ type hit = {
   containment : float;
 }
 
+(* Lexical nesting (either direction; true for self). Nested defs are
+   indexed as their own units AND grafted into the parent's CFG, so
+   parent vs child is a tautological near-dupe — never report it. *)
+let nests (a : meta) (b : meta) : bool =
+  a.file = b.file
+  && ((a.line_start <= b.line_start && b.line_end <= a.line_end)
+     || (b.line_start <= a.line_start && a.line_end <= b.line_end))
+
 (* ── builder ─────────────────────────────────────────────────────────────── *)
 
 type builder = {
@@ -143,14 +151,15 @@ let duplicates_full (t : t) ~(threshold : float) :
              if not (Hashtbl.mem seen key) then (
                Hashtbl.replace seen key ();
                let csg, cmeta = t.sigs.(cand) in
-               let j = Signature.jaccard sg csg in
-               let c =
-                 Float.max
-                   (Signature.containment ~query:sg csg)
-                   (Signature.containment ~query:csg sg)
-               in
-               if Float.max j c >= threshold then
-                 out := (meta, cmeta, j, c) :: !out)))
+               if not (nests meta cmeta) then
+                 let j = Signature.jaccard sg csg in
+                 let c =
+                   Float.max
+                     (Signature.containment ~query:sg csg)
+                     (Signature.containment ~query:csg sg)
+                 in
+                 if Float.max j c >= threshold then
+                   out := (meta, cmeta, j, c) :: !out)))
   done;
   List.sort (fun (_, _, a, _) (_, _, b, _) -> compare b a) !out
 
@@ -167,7 +176,8 @@ let duplicates (t : t) ~(threshold : float) : (meta * meta * float) list =
              if not (Hashtbl.mem seen key) then (
                Hashtbl.replace seen key ();
                let csg, cmeta = t.sigs.(cand) in
-               let j = Signature.jaccard sg csg in
-               if j >= threshold then out := (meta, cmeta, j) :: !out)))
+               if not (nests meta cmeta) then
+                 let j = Signature.jaccard sg csg in
+                 if j >= threshold then out := (meta, cmeta, j) :: !out)))
   done;
   List.sort (fun (_, _, a) (_, _, b) -> compare b a) !out

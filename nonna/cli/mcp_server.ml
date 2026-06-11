@@ -198,11 +198,17 @@ let query_unit (u : Units.unit_info) ~(threshold : float) ~(top_k : int) :
   let sg = Signature.extract ~ext:(Filename.extension u.Units.ufile) u.Units.ucfg in
   if Signature.size sg < Units.min_features then []
   else
+    let self_m =
+      {
+        Engine.name = u.Units.uname;
+        file = u.Units.ufile;
+        line_start = u.Units.uline_start;
+        line_end = u.Units.uline_end;
+      }
+    in
     Engine.query !engine sg ~threshold ~max_results:(top_k + 1)
     |> List.filter (fun (h : Engine.hit) ->
-           not
-             (h.Engine.meta.Engine.file = u.Units.ufile
-             && h.Engine.meta.Engine.line_start = u.Units.uline_start))
+           not (Engine.nests self_m h.Engine.meta))
     |> List.filteri (fun i _ -> i < top_k)
 
 let hits_text (label : string) (hits : Engine.hit list) : string =
