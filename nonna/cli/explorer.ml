@@ -22,9 +22,19 @@ let meta_json (m : Engine.meta) : J.t =
     ]
 
 let pairs_json (eng : Engine.t) ~(ready : bool) : J.t =
-  match !cached_pairs with
-  | Some j when ready -> j
-  | _ ->
+  match (!cached_pairs, ready) with
+  | Some j, true -> j
+  | _, false ->
+      (* the indexing thread is still mutating the engine: iterating its
+         postings here races (Dynarray detects it and raises). Report
+         progress only; the UI polls until ready. *)
+      `Assoc
+        [
+          ("pairs", `List []);
+          ("indexing", `Bool true);
+          ("count", `Int (Engine.size eng));
+        ]
+  | None, true ->
       let ps = Engine.duplicates_full eng ~threshold:pairs_floor in
       let truncated = List.length ps > pairs_cap in
       let ps = List.filteri (fun i _ -> i < pairs_cap) ps in
@@ -45,10 +55,11 @@ let pairs_json (eng : Engine.t) ~(ready : bool) : J.t =
                    ps) );
             ("truncated", `Bool truncated);
             ("floor", `Float pairs_floor);
-            ("indexing", `Bool (not ready));
+            ("indexing", `Bool false);
+            ("count", `Int (Engine.size eng));
           ]
       in
-      if ready then cached_pairs := Some j;
+      cached_pairs := Some j;
       j
 
 (* Serve source only for (file, start) pairs that exist in the index — the
@@ -125,10 +136,17 @@ const $ = id => document.getElementById(id);
 let PAIRS = [], rows = [], sel = -1, srcCache = {};
 
 async function load() {
-  const d = await (await fetch('/api/pairs')).json();
+  let d;
+  try {
+    $('count').textContent = PAIRS.length ? $('count').textContent : 'scanning…';
+    d = await (await fetch('/api/pairs')).json();
+  } catch (e) { setTimeout(load, 2000); return; }
   PAIRS = d.pairs || [];
-  if (d.indexing) { $('count').textContent = 'indexing…'; setTimeout(load, 2000); }
   render();
+  if (d.indexing) {
+    $('count').textContent = `indexing… ${d.count || 0} functions so far`;
+    setTimeout(load, 2000);
+  }
 }
 
 function filt() {
