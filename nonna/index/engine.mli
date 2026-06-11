@@ -19,6 +19,12 @@ type hit = {
   containment : float; (* of the query in the target *)
 }
 
+val nests : meta -> meta -> bool
+(** Same file and one line range contains the other (either direction).
+    A nested def vs its enclosing function is a tautological match — the
+    closure graft makes the parent's body mostly the child — so such
+    pairs are never reported. Also true for self (a range nests itself). *)
+
 (* ── building (single-threaded, indexing side) ─────────────────────────── *)
 
 type builder

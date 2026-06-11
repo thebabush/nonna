@@ -57,13 +57,19 @@ let cmd_query (corpus : string list) (draft : string) (threshold : float)
            print_endline "  (too small to match)"
          else
            let hits =
+             let self_m =
+               {
+                 Engine.name = u.Units.uname;
+                 file = u.Units.ufile;
+                 line_start = u.Units.uline_start;
+                 line_end = u.Units.uline_end;
+               }
+             in
              Engine.query eng sg ~threshold ~max_results:top_k
-             (* the draft may itself be inside the corpus: drop self-matches
-                by location *)
+             (* the draft may itself be inside the corpus (drop self) or be
+                a nested def queried against its container (tautological) *)
              |> List.filter (fun (h : Engine.hit) ->
-                    not
-                      (h.Engine.meta.Engine.file = u.Units.ufile
-                      && h.Engine.meta.Engine.line_start = u.Units.uline_start))
+                    not (Engine.nests self_m h.Engine.meta))
            in
            if hits = [] then print_endline "  no similar function found."
            else
