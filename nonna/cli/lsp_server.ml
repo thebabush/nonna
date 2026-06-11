@@ -89,7 +89,7 @@ let path_of_uri (uri : string) : string =
 
 (* ── Analysis ────────────────────────────────────────────────────────────── *)
 
-let engine : Engine.t ref = ref (Engine.create ())
+let engine : Engine.t ref = ref Engine.empty
 
 (* Indexing runs on a background thread: the protocol loop must stay
    responsive (shutdown/didOpen) — a synchronous index of a big workspace
@@ -100,13 +100,13 @@ let index_workspace_async (root : string) : unit =
     (Thread.create
        (fun () ->
          try
-           let eng = Engine.create () in
+           let b = Engine.create () in
            Units.units_of_paths [ root ]
            |> List.iter (fun (u : Units.unit_info) ->
                   let sg = Signature.extract ~ext:(Filename.extension u.Units.ufile) u.Units.ucfg in
                   if Signature.size sg >= Units.min_features then
                     ignore
-                      (Engine.add eng
+                      (Engine.add b
                          {
                            Engine.name = u.Units.uname;
                            file = u.Units.ufile;
@@ -114,6 +114,7 @@ let index_workspace_async (root : string) : unit =
                            line_end = u.Units.uline_end;
                          }
                          sg));
+           let eng = Engine.freeze b in
            engine := eng;
            log_to_client
              (Printf.sprintf "indexed %d units under %s" (Engine.size eng)

@@ -56,7 +56,7 @@ let tool_text ?(is_error = false) (text : string) : J.t =
 
 (* ── Index ───────────────────────────────────────────────────────────────── *)
 
-let engine : Engine.t ref = ref (Engine.create ())
+let engine : Engine.t ref = ref Engine.empty
 let index_root = ref ""
 let indexing_done = ref false
 let workspace_fns = ref 0
@@ -69,13 +69,19 @@ let index_async (root : string) : unit =
     (Thread.create
        (fun () ->
          (try
-            let eng = Engine.create () in
+            (* the BUILDER never escapes this thread; query paths only ever
+               see frozen snapshots (the type system enforces it) *)
+            let b = Engine.create () in
             Units.units_of_paths [ root ]
             |> List.iter (fun (u : Units.unit_info) ->
-                   let sg = Signature.extract ~ext:(Filename.extension u.Units.ufile) u.Units.ucfg in
+                   let sg =
+                     Signature.extract
+                       ~ext:(Filename.extension u.Units.ufile)
+                       u.Units.ucfg
+                   in
                    if Signature.size sg >= Units.min_features then
                      ignore
-                       (Engine.add eng
+                       (Engine.add b
                           {
                             Engine.name = u.Units.uname;
                             file = u.Units.ufile;
@@ -83,13 +89,14 @@ let index_async (root : string) : unit =
                             line_end = u.Units.uline_end;
                           }
                           sg));
-            workspace_fns := Engine.size eng;
+            workspace_fns := Engine.built b;
             (* expose the workspace early; deps stream in behind it *)
-            engine := eng;
+            engine := Engine.freeze b;
             (* D3: transitive cargo deps + std, from cached sigdbs *)
-            let nd, nf = Corpus.add_deps eng root in
+            let nd, nf = Corpus.add_deps b root in
             dep_count := nd;
-            dep_fns := nf
+            dep_fns := nf;
+            engine := Engine.freeze b
           with e ->
             prerr_endline ("nonna mcp: indexing failed: " ^ Printexc.to_string e));
          indexing_done := true)

@@ -371,7 +371,7 @@ let rank (pairs_file : string) (corpus_paths : string list) =
   (* pairs.tsv paths may differ cosmetically from walked paths (double
      slashes, symlinks) — join on the canonical form *)
   let canon (p : string) : string = try Unix.realpath p with _ -> p in
-  let eng = Engine.create () in
+  let bld = Engine.create () in
   let fid_of : (string * int, int) Hashtbl.t = Hashtbl.create 8192 in
   let sig_of : (int, Signature.t) Hashtbl.t = Hashtbl.create 8192 in
   Units.units_of_paths corpus_paths
@@ -379,7 +379,7 @@ let rank (pairs_file : string) (corpus_paths : string list) =
          let sg = Signature.extract ~ext:(Filename.extension u.Units.ufile) u.Units.ucfg in
          if Signature.size sg >= Units.min_features then (
            let fid =
-             Engine.add eng
+             Engine.add bld
                {
                  Engine.name = u.Units.uname;
                  file = u.Units.ufile;
@@ -391,6 +391,7 @@ let rank (pairs_file : string) (corpus_paths : string list) =
            Hashtbl.replace fid_of (canon u.Units.ufile, u.Units.uline_start) fid;
            Hashtbl.replace sig_of fid sg))
   |> ignore;
+  let eng = Engine.freeze bld in
   Printf.eprintf "rank: corpus indexed (%d units)\n%!" (Engine.size eng);
 
   (* kind -> ranks (0 = not found among LSH candidates) *)

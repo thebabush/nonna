@@ -132,7 +132,7 @@ let entries_of_dep (d : dep) : Sigdb.entry list =
 
 (* Extend an engine with all deps + std of a cargo workspace.
    Returns (dep count, function count added); logs per-dep via [log]. *)
-let add_deps (eng : Engine.t) ?(log = fun (_ : string) -> ()) (root : string) :
+let add_deps (b : Engine.builder) ?(log = fun (_ : string) -> ()) (root : string) :
     int * int =
   (* std belongs in the corpus only for cargo projects — a Python workspace
      gains nothing from 19k Rust std functions *)
@@ -144,7 +144,7 @@ let add_deps (eng : Engine.t) ?(log = fun (_ : string) -> ()) (root : string) :
          let entries = entries_of_dep d in
          List.iter
            (fun (e : Sigdb.entry) ->
-             ignore (Engine.add eng e.Sigdb.meta e.Sigdb.sg))
+             ignore (Engine.add b e.Sigdb.meta e.Sigdb.sg))
            entries;
          added := !added + List.length entries;
          log
