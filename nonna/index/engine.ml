@@ -19,6 +19,7 @@ type meta = {
   file : string;
   line_start : int;
   line_end : int;
+  code_lines : int;
 }
 
 type hit = {
@@ -138,8 +139,16 @@ let query ?(exclude = -1) (t : t) (qsig : Signature.t) ~(threshold : float)
 
 (* All intra-index pairs with jaccard AND containment (max of both
    directions) — the duplication-explorer feed. Gated on max(j, c). *)
-let duplicates_full (t : t) ~(threshold : float) :
-    (meta * meta * float * float) list =
+type pair = {
+  a : meta;
+  b : meta;
+  a_features : int;
+  b_features : int;
+  j : float;
+  c : float;
+}
+
+let duplicates_full (t : t) ~(threshold : float) : pair list =
   let seen = Hashtbl.create 256 in
   let out = ref [] in
   for fid = 0 to size t - 1 do
@@ -159,9 +168,18 @@ let duplicates_full (t : t) ~(threshold : float) :
                      (Signature.containment ~query:csg sg)
                  in
                  if Float.max j c >= threshold then
-                   out := (meta, cmeta, j, c) :: !out)))
+                   out :=
+                     {
+                       a = meta;
+                       b = cmeta;
+                       a_features = Signature.size sg;
+                       b_features = Signature.size csg;
+                       j;
+                       c;
+                     }
+                     :: !out)))
   done;
-  List.sort (fun (_, _, a, _) (_, _, b, _) -> compare b a) !out
+  List.sort (fun (p : pair) (q : pair) -> compare q.j p.j) !out
 
 (* All intra-index pairs above the threshold ("nonna dupes"). *)
 let duplicates (t : t) ~(threshold : float) : (meta * meta * float) list =

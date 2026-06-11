@@ -103,17 +103,9 @@ let index_workspace_async (root : string) : unit =
            let b = Engine.create () in
            Units.units_of_paths [ root ]
            |> List.iter (fun (u : Units.unit_info) ->
-                  let sg = Signature.extract ~ext:(Filename.extension u.Units.ufile) u.Units.ucfg in
+                  let sg = Signature.extract ~lang:u.Units.ulang u.Units.ucfg in
                   if Signature.size sg >= Units.min_features then
-                    ignore
-                      (Engine.add b
-                         {
-                           Engine.name = u.Units.uname;
-                           file = u.Units.ufile;
-                           line_start = u.Units.uline_start;
-                           line_end = u.Units.uline_end;
-                         }
-                         sg));
+                    ignore (Engine.add b (Units.meta_of u) sg));
            let eng = Engine.freeze b in
            engine := eng;
            log_to_client
@@ -132,17 +124,10 @@ let line_range (line0 : int) : J.t =
 let diagnostics_for (path : string) : J.t list =
   Units.units_of_file path
   |> List.filter_map (fun (u : Units.unit_info) ->
-         let sg = Signature.extract ~ext:(Filename.extension u.Units.ufile) u.Units.ucfg in
+         let sg = Signature.extract ~lang:u.Units.ulang u.Units.ucfg in
          if Signature.size sg < Units.min_features then None
          else
-           let self_m =
-             {
-               Engine.name = u.Units.uname;
-               file = path;
-               line_start = u.Units.uline_start;
-               line_end = u.Units.uline_end;
-             }
-           in
+           let self_m = Units.meta_of u in
            Engine.query !engine sg ~threshold:report_threshold ~max_results:5
            |> List.filter (fun (h : Engine.hit) ->
                   not (Engine.nests self_m h.Engine.meta))
@@ -225,16 +210,9 @@ let find_similar (uri : string) (line0 : int) : J.t =
   match Units.unit_at path (line0 + 1) with
   | None -> `Assoc [ ("query", `Null); ("hits", `List []) ]
   | Some u ->
-      let sg = Signature.extract ~ext:(Filename.extension u.Units.ufile) u.Units.ucfg in
+      let sg = Signature.extract ~lang:u.Units.ulang u.Units.ucfg in
       let hits =
-        let self_m =
-          {
-            Engine.name = u.Units.uname;
-            file = path;
-            line_start = u.Units.uline_start;
-            line_end = u.Units.uline_end;
-          }
-        in
+        let self_m = Units.meta_of u in
         Engine.query !engine sg ~threshold:0.2 ~max_results:15
         |> List.filter (fun (h : Engine.hit) ->
                not (Engine.nests self_m h.Engine.meta))

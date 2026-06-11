@@ -8,7 +8,7 @@ module Engine = Nonna_index.Engine
 module Signature = Nonna_features.Signature
 
 (* bump on any change to hashing/features/weights *)
-let format_version = 2
+let format_version = 3
 
 type entry = { meta : Engine.meta; sg : Signature.t }
 
@@ -18,8 +18,8 @@ let profile_tag () : string =
     (if !Signature.default_profile = Signature.full_profile then "full"
      else "structural")
     !Dfg.iterations
-    (Dfg.cfg_bits (Dfg.base_cfg_for ".rs"))
-    (Dfg.cfg_bits (Dfg.base_cfg_for ".py"))
+    (Dfg.cfg_bits (Dfg.base_cfg_for Lang.Rust))
+    (Dfg.cfg_bits (Dfg.base_cfg_for Lang.Python))
 
 let save (path : string) (entries : entry list) : unit =
   let tmp = path ^ ".tmp" in

@@ -75,20 +75,10 @@ let index_async (root : string) : unit =
             Units.units_of_paths [ root ]
             |> List.iter (fun (u : Units.unit_info) ->
                    let sg =
-                     Signature.extract
-                       ~ext:(Filename.extension u.Units.ufile)
-                       u.Units.ucfg
+                     Signature.extract ~lang:u.Units.ulang u.Units.ucfg
                    in
                    if Signature.size sg >= Units.min_features then
-                     ignore
-                       (Engine.add b
-                          {
-                            Engine.name = u.Units.uname;
-                            file = u.Units.ufile;
-                            line_start = u.Units.uline_start;
-                            line_end = u.Units.uline_end;
-                          }
-                          sg));
+                     ignore (Engine.add b (Units.meta_of u) sg));
             workspace_fns := Engine.built b;
             (* expose the workspace early; deps stream in behind it *)
             engine := Engine.freeze b;
@@ -195,17 +185,10 @@ let hit_block (h : Engine.hit) : string =
 
 let query_unit (u : Units.unit_info) ~(threshold : float) ~(top_k : int) :
     Engine.hit list =
-  let sg = Signature.extract ~ext:(Filename.extension u.Units.ufile) u.Units.ucfg in
+  let sg = Signature.extract ~lang:u.Units.ulang u.Units.ucfg in
   if Signature.size sg < Units.min_features then []
   else
-    let self_m =
-      {
-        Engine.name = u.Units.uname;
-        file = u.Units.ufile;
-        line_start = u.Units.uline_start;
-        line_end = u.Units.uline_end;
-      }
-    in
+    let self_m = Units.meta_of u in
     Engine.query !engine sg ~threshold ~max_results:(top_k + 1)
     |> List.filter (fun (h : Engine.hit) ->
            not (Engine.nests self_m h.Engine.meta))
@@ -275,16 +258,16 @@ let diff_functions (args : J.t) : J.t =
   match (resolve_side args "a", resolve_side args "b") with
   | Error e, _ | _, Error e -> tool_text ~is_error:true e
   | Ok (la, ua), Ok (lb, ub) ->
-      let sa = Signature.extract ~ext:(Filename.extension ua.Units.ufile) ua.Units.ucfg in
-      let sb = Signature.extract ~ext:(Filename.extension ub.Units.ufile) ub.Units.ucfg in
+      let sa = Signature.extract ~lang:ua.Units.ulang ua.Units.ucfg in
+      let sb = Signature.extract ~lang:ub.Units.ulang ub.Units.ucfg in
       let ga =
         Dfg.graph_of
-          ~fc:(Dfg.base_cfg_for (Filename.extension ua.Units.ufile))
+          ~fc:(Dfg.base_cfg_for ua.Units.ulang)
           ua.Units.ucfg
       in
       let gb =
         Dfg.graph_of
-          ~fc:(Dfg.base_cfg_for (Filename.extension ub.Units.ufile))
+          ~fc:(Dfg.base_cfg_for ub.Units.ulang)
           ub.Units.ucfg
       in
       let text =
