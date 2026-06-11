@@ -33,11 +33,17 @@ jobs:
           ocaml-compiler: "5.3.0"
 
       # opam deps (incl. the memprof-limits pin via semgrep.opam pin-depends)
-      # + fetch/build/install the tree-sitter runtime locally
+      # + fetch/build/install the tree-sitter runtime locally.
+      # Retried: the pin fetch hits gitlab.com, which 503s occasionally.
       - name: engine deps
         run: |
           eval $(opam env)
-          make -C vendor/opengrep install-deps-for-semgrep-core
+          for i in 1 2 3; do
+            make -C vendor/opengrep install-deps-for-semgrep-core && exit 0
+            echo "::warning::engine deps attempt $i failed; retrying in 60s"
+            sleep 60
+          done
+          exit 1
 
       - name: build
         run: |
