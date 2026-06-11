@@ -134,7 +134,10 @@ let entries_of_dep (d : dep) : Sigdb.entry list =
    Returns (dep count, function count added); logs per-dep via [log]. *)
 let add_deps (eng : Engine.t) ?(log = fun (_ : string) -> ()) (root : string) :
     int * int =
-  let deps = cargo_deps root @ std_deps () in
+  (* std belongs in the corpus only for cargo projects — a Python workspace
+     gains nothing from 19k Rust std functions *)
+  let is_cargo = Sys.file_exists (Filename.concat root "Cargo.toml") in
+  let deps = cargo_deps root @ (if is_cargo then std_deps () else []) in
   let added = ref 0 in
   deps
   |> List.iter (fun d ->
