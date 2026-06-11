@@ -1,0 +1,54 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build-and-test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: system deps (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libpcre3-dev libpcre2-dev libgmp-dev libev-dev
+
+      - name: system deps (macOS)
+        if: runner.os == 'macOS'
+        run: brew install bash pkg-config pcre pcre2 gmp libev coreutils gettext
+
+      - uses: ocaml/setup-ocaml@v3
+        with:
+          ocaml-compiler: "5.3.0"
+
+      # opam deps (incl. the memprof-limits pin via semgrep.opam pin-depends)
+      # + fetch/build/install the tree-sitter runtime locally
+      - name: engine deps
+        run: |
+          eval $(opam env)
+          make -C vendor/opengrep install-deps-for-semgrep-core
+
+      - name: build
+        run: |
+          eval $(opam env)
+          . vendor/opengrep/libs/ocaml-tree-sitter-core/tree-sitter-config.sh
+          dune build nonna
+
+      - name: tests
+        run: |
+          eval $(opam env)
+          bash tests/run.sh
+          bash tests/sanity.sh
+          bash tests/lsp-smoke.sh
+          bash tests/mcp-smoke.sh

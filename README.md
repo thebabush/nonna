@@ -23,11 +23,13 @@ Looking for v1 (the Python slop detector with the WASM demo)?
 
 ## 🏗️ Build
 
-Requires the `opengrep-5.3.0` opam switch (OCaml 5.3.0) and bash ≥ 5. From the
-repo root:
+[![ci](https://github.com/thebabush/nonna/actions/workflows/ci.yml/badge.svg)](https://github.com/thebabush/nonna/actions/workflows/ci.yml)
+
+Linux and macOS (on Windows, use WSL — the engine's build is Unix-only).
+Requires an OCaml 5.3.0 opam switch and bash ≥ 5. From the repo root:
 
 ```sh
-git submodule update --init          # vendor/opengrep (pinned)
+git submodule update --init --recursive   # vendor/opengrep + its grammars
 export PATH=/opt/homebrew/bin:$PATH
 eval $(opam env --switch=opengrep-5.3.0 --set-switch)
 . vendor/opengrep/libs/ocaml-tree-sitter-core/tree-sitter-config.sh
