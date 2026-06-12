@@ -103,7 +103,9 @@ let cmd_graph (file : string) (fn_filter : string option) (outdir : string) =
   selected
   |> List.iter (fun (u : Units.unit_info) ->
          let g =
-           Dfg.graph_of ~fc:(Dfg.base_cfg_for u.Units.ulang)
+           Dfg.graph_of
+             ~fc:(Dfg.base_cfg_for u.Units.ulang)
+             ~iters:(Dfg.iters_for (Some u.Units.ulang))
              u.Units.ucfg
          in
          let source =
@@ -213,7 +215,7 @@ let rec strip_profile acc = function
           exit 1);
       strip_profile acc rest
   | "--iters" :: v :: rest ->
-      Dfg.iterations := int_of_string v;
+      Dfg.iterations_override := Some (int_of_string v);
       strip_profile acc rest
   | "--with" :: v :: rest ->
       (* fold channels into the BASE hashes (ablation studies) *)

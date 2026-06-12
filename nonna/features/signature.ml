@@ -50,12 +50,13 @@ let extract ?(profile : profile option) ?(lang : Lang.t option)
   let fc =
     match lang with Some l -> Dfg.base_cfg_for l | None -> !Dfg.base_cfg
   in
+  let iters = Dfg.iters_for lang in
   let sem = Semantic.extract_parts fcfg in
   let all : (Fhash.t * float) list =
-    (Dfg.extract ~fc fcfg
+    (Dfg.extract ~fc ~iters fcfg
     |> List.map (fun (f : Dfg.feature) -> (f.Dfg.hash, dfg_weight f.Dfg.tag)))
     @ (if p.w_delta_sem > 0. then
-         Dfg.extract_delta ~base:fc ~rich:Dfg.semantic_cfg fcfg
+         Dfg.extract_delta ~base:fc ~iters ~rich:Dfg.semantic_cfg fcfg
          |> List.map (fun (f : Dfg.feature) ->
                 (f.Dfg.hash, p.w_delta_sem *. dfg_weight f.Dfg.tag))
        else [])

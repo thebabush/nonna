@@ -287,10 +287,24 @@ vendor/opengrep               # pinned engine (git submodule @ 8ee180dc)
   (strings cost renamed −5pp). Python: those PLUS `string_values+field_names`
   — ALL MRR 0.955→0.969, evolved MRR 0.862→0.929, samefile FPR(max-gate)
   0.068→0.036; `ty_descrs` actively hurts (annotation drift breaks even exact
-  pairs). Depth 1 optimal/flat in both. Remaining (issue #1): wire
-  per-language base configs into extraction; kernel/C benchmark; JS/Go.
-  Python-specific: unittest↔pytest assert migrations dominate the evolved
-  tail — normalization pass endorsed.
+  pairs). Depth 1 optimal/flat in both. Per-language base configs are wired
+  into extraction (`Dfg.base_cfg_for : Lang.t -> cfg`).
+  C (2026-06-11, Linux kernel v6.10↔v6.16, sparse slice kernel/lib/mm/ext4/
+  ipv4/i915, 70k units, 8.1k evolved pairs): parser verdict GO — 1.4% of
+  files fail outright, then only 0.2% FixmeExp / 1.5% NTodo; macro calls
+  keep their names (only macro ARGS go fixme), so `nonna parse-stats` is the
+  standard pre-tuning probe for any new language. Sweep: same winning
+  channels as Python (`+field_names+string_values`: ALL 0.905→0.918, evolved
+  0.870→0.888), but **depth 0** — propagation is flat on MRR for C and
+  doubles candidate misses, so depth is per-language too
+  (`Dfg.iters_for`; `--iters` still overrides globally). macro_tokens /
+  ty_descrs / param_pos are flat and dent renamed (identifier leakage).
+  Judge (n=249, sonnet): structure +0.844 > dataflow +0.810 > algorithm
+  +0.804 ≫ purpose +0.650 — same ordering as Rust/Python. Engine misses
+  concentrate in 6.10→6.16 idiom migrations (`CLASS(fd)`, `guard(mutex)`,
+  accessor introductions): same algorithm, mechanically different IL.
+  Remaining (issue #1): JS/Go sweeps. Python-specific: unittest↔pytest
+  assert migrations dominate the evolved tail — normalization pass endorsed.
 - *(resolved: N2 → D7, N6 → D11, N7 → closure grafting)*
 
 ## Known levers, deliberately not pulled yet

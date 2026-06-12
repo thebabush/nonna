@@ -14,12 +14,15 @@ type entry = { meta : Engine.meta; sg : Signature.t }
 
 let profile_tag () : string =
   let module Dfg = Nonna_features.Dfg in
-  Printf.sprintf "%s-i%d-b%x-p%x"
+  Printf.sprintf "%s-i%s-b%x-p%x-c%x"
     (if !Signature.default_profile = Signature.full_profile then "full"
      else "structural")
-    !Dfg.iterations
+    (match !Dfg.iterations_override with
+    | Some n -> string_of_int n
+    | None -> "L" (* per-language defaults *))
     (Dfg.cfg_bits (Dfg.base_cfg_for Lang.Rust))
     (Dfg.cfg_bits (Dfg.base_cfg_for Lang.Python))
+    (Dfg.cfg_bits (Dfg.base_cfg_for Lang.C))
 
 let save (path : string) (entries : entry list) : unit =
   let tmp = path ^ ".tmp" in

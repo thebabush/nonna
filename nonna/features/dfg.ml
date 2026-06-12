@@ -56,7 +56,16 @@ type feature = { hash : Fhash.t; tag : tag }
    0.729 -> 0.823, AUC 0.9970 -> 0.9975, rank renamed-MRR 0.994 -> 1.000,
    evolved_major candidate-miss halved, cross-style N7 case 0.40 -> 0.56 —
    with FPR flat and ~3x cheaper extraction. *)
-let iterations = ref 1
+let iterations_override : int option ref = ref None
+
+(* Per-language depth (kernel rank sweep, 2026-06-11): C wants 0 — depth 1
+   is flat on evolved MRR but doubles candidate misses (0.4%->0.8%) and
+   costs exact/renamed perfection (1.000->0.999/0.989). Macro-heavy code
+   makes neighborhoods noisier, so propagated hashes diverge faster. *)
+let iters_for (lang : Lang.t option) : int =
+  match !iterations_override with
+  | Some n -> n
+  | None -> ( match lang with Some Lang.C -> 0 | _ -> 1)
 
 (* ── Local (seed) hashing of expressions ─────────────────────────────────── *)
 
@@ -152,6 +161,10 @@ let base_cfg_for (lang : Lang.t) : cfg =
   match lang with
   | Lang.Python | Lang.Python2 | Lang.Python3 ->
       { b with string_values = true; field_names = true }
+  (* kernel-tuned (v6.10<->v6.16 rank sweep): struct fields and format/log
+     strings are API identity in C, same as Python; the other channels are
+     flat and leak identifiers into renamed pairs *)
+  | Lang.C -> { b with string_values = true; field_names = true }
   | _ -> b
 
 (* compact tag for cache keys / reports *)
@@ -459,7 +472,8 @@ type graph = { dnodes : dnode array; rounds : int array array }
 module IntMap = Map.Make (Int)
 module IntSet = Set.Make (Int)
 
-let graph_of ?(fc : cfg = !base_cfg) (fcfg : IL.fun_cfg) : graph =
+let graph_of ?(fc : cfg = !base_cfg) ?(iters = 1) (fcfg : IL.fun_cfg) :
+    graph =
   let nodes : dnode Dynarray.t = Dynarray.create () in
   let push (d : dnode) : int =
     Dynarray.add_last nodes d;
@@ -715,7 +729,7 @@ let graph_of ?(fc : cfg = !base_cfg) (fcfg : IL.fun_cfg) : graph =
   (* Iterative propagation, snapshotting each round. *)
   let snapshot () = Array.map (fun d -> d.hash) arr in
   let rounds = ref [ snapshot () ] in
-  for _round = 1 to !iterations do
+  for _round = 1 to iters do
     Array.iter (fun d -> d.prev <- d.hash) arr;
     Array.iter
       (fun d ->
@@ -743,8 +757,9 @@ let graph_of ?(fc : cfg = !base_cfg) (fcfg : IL.fun_cfg) : graph =
 (* Extract tagged DFG features for one function unit: round 0 emits the local
    seeds (v1's most rename-invariant features); later rounds emit only nodes
    whose hash changed (v1 extract_tagged_features). *)
-let extract ?(fc : cfg = !base_cfg) (fcfg : IL.fun_cfg) : feature list =
-  let g = graph_of ~fc fcfg in
+let extract ?(fc : cfg = !base_cfg) ?(iters = 1) (fcfg : IL.fun_cfg) :
+    feature list =
+  let g = graph_of ~fc ~iters fcfg in
   let n = Array.length g.dnodes in
   let features = ref [] in
   for i = 0 to n - 1 do
@@ -768,10 +783,10 @@ let extract ?(fc : cfg = !base_cfg) (fcfg : IL.fun_cfg) : feature list =
    Salted into a disjoint hash domain. *)
 let delta_salt = leaf 0x5A [ "delta" ]
 
-let extract_delta ?(base : cfg = !base_cfg) ~(rich : cfg)
+let extract_delta ?(base : cfg = !base_cfg) ?(iters = 1) ~(rich : cfg)
     (fcfg : IL.fun_cfg) : feature list =
-  let gb = graph_of ~fc:base fcfg in
-  let gr = graph_of ~fc:rich fcfg in
+  let gb = graph_of ~fc:base ~iters fcfg in
+  let gr = graph_of ~fc:rich ~iters fcfg in
   let n = Array.length gr.dnodes in
   let features = ref [] in
   if Array.length gb.dnodes = n then begin
