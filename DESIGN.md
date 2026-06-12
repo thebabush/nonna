@@ -231,6 +231,15 @@ oracle is Rust-only (N8); evolved_major's low tail is genuine rewrites.
 - **Delta-channel architecture beats base-swapping**: emit rich-config hashes only
   where they differ from the structural base (full-set emission doubles the
   mismatch mass of structural edits).
+- **Expression-node graphs (`exp_nodes`) win Rust's evolved kind** (2026-06-11):
+  collapsed seeds give infinite hops inside an expression but k hops across
+  instructions — one edit kills the whole tree's feature. With sub-expressions
+  as DFG nodes (operands as edges, var reads resolving to reaching defs at the
+  leaf, per-field record nodes), depth means one thing everywhere and edits
+  poison only their k-hop neighborhood. Rust default is now exp_nodes @ depth 2:
+  evolved MRR 0.723→0.766, r@5 0.812→0.859, evolved_major 0.778, exact/renamed
+  flat. C measured a tie vs collapsed depth-0 (0.917 vs 0.918, better tail) and
+  keeps collapsed; Python unmeasured (corpus offline), keeps collapsed depth-1.
 - **Closure grafting (N7)**: combinator-style fns were thin shells + detached
   lambdas; cross-style drafts went from no-match to top-hit (0.40→0.56 j at
   depth 3; 0.56+ at depth 1).
@@ -309,7 +318,9 @@ vendor/opengrep               # pinned engine (git submodule @ 8ee180dc)
 
 ## Known levers, deliberately not pulled yet
 
-- Per-field record-construction features (the j=0.39 one-field cliff).
+- Per-field record-construction features — delivered on Rust by `exp_nodes`
+  (each record field is its own node); still collapsed on C/Python pending
+  their exp_nodes sweeps.
 - Dual-profile indexing (structural wins renamed, full wins evolved — complementary).
 - Float-value channel on a float-heavy corpus; per-language sweeps (N8).
 - Loop-idiom normalization (index-while ↔ foreach) if cross-style recall matters.

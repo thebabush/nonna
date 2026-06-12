@@ -65,7 +65,11 @@ let iterations_override : int option ref = ref None
 let iters_for (lang : Lang.t option) : int =
   match !iterations_override with
   | Some n -> n
-  | None -> ( match lang with Some Lang.C -> 0 | _ -> 1)
+  | None -> (
+      match lang with
+      | Some Lang.C -> 0
+      | Some Lang.Rust -> 2 (* exp-node features specialize per round *)
+      | _ -> 1)
 
 (* ── Local (seed) hashing of expressions ─────────────────────────────────── *)
 
@@ -172,6 +176,12 @@ let base_cfg_for (lang : Lang.t) : cfg =
      strings are API identity in C, same as Python; the other channels are
      flat and leak identifiers into renamed pairs *)
   | Lang.C -> { b with string_values = true; field_names = true }
+  (* exp-nodes sweep (2026-06-11): decomposed expression graphs at depth 2
+     win Rust's evolved kind decisively (MRR 0.723->0.766, r@5 0.812->0.859,
+     everything else flat) — an edit poisons k hops, not a whole collapsed
+     tree. C measured a tie vs collapsed depth-0 (0.917 vs 0.918) and keeps
+     collapsed; Python is unmeasured on exp_nodes and keeps collapsed too. *)
+  | Lang.Rust -> { b with exp_nodes = true }
   | _ -> b
 
 (* compact tag for cache keys / reports *)
