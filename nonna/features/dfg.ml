@@ -107,6 +107,11 @@ type cfg = {
   ty_descrs : bool; (* declared-type descriptors (params / casts / new) *)
   param_pos : bool; (* parameter position in param seeds *)
   macro_tokens : bool; (* macro token bags (FixmeExp / FixmeInstr) *)
+  exp_nodes : bool;
+      (* sub-expressions become DFG nodes (operands flow in as edges)
+         instead of collapsing into the consumer's seed: an edit then
+         poisons only its k-hop neighborhood, not the whole tree, and
+         depth means the same thing inside and across instructions *)
 }
 
 let structural_cfg =
@@ -119,6 +124,7 @@ let structural_cfg =
     ty_descrs = false;
     param_pos = false;
     macro_tokens = false;
+    exp_nodes = false;
   }
 
 let semantic_cfg =
@@ -131,6 +137,7 @@ let semantic_cfg =
     ty_descrs = true;
     param_pos = true;
     macro_tokens = true;
+    exp_nodes = false; (* structural choice, not a signal channel *)
   }
 
 (* does this literal kind's VALUE go into the seed under [fc]? *)
@@ -177,6 +184,7 @@ let cfg_bits (c : cfg) : int =
   lor (if c.ty_descrs then 32 else 0)
   lor (if c.param_pos then 64 else 0)
   lor (if c.macro_tokens then 128 else 0)
+  lor (if c.exp_nodes then 256 else 0)
 
 (* Recursively hash a side-effect-free exp; also collect the names it reads,
    in traversal order (these become DFG predecessor edges). *)
@@ -638,6 +646,280 @@ let graph_of ?(fc : cfg = !base_cfg) ?(iters = 1) (fcfg : IL.fun_cfg) :
         | many -> Some (phi_node many))
   in
 
+  (* ── exp-nodes mode (fc.exp_nodes): sub-expressions are DFG nodes ────
+     Each returns the index of the node representing the value. Bare
+     variable reads create NO node — they resolve straight to the reaching
+     definition (or the extern sentinel), so a use is one edge, not a hop.
+     Seeds carry only the node's own kind; operand context arrives via
+     propagation rounds, exactly like def-use context. *)
+  let mk_enode ~line ?(comm = false) ?(emit = true) ~tag ~descr seed preds =
+    let d = fresh_dnode () in
+    d.hash <- seed;
+    d.prev <- seed;
+    d.commutative <- comm;
+    d.emit <- emit;
+    d.dtag <- tag;
+    d.dlabel <- descr;
+    d.dline <- line;
+    d.preds <- Array.of_list (List.mapi (fun pos i -> (i, pos)) preds);
+    push d
+  in
+  let rec enode_of_exp ~ni ~line (e : IL.exp) : int =
+    let enode_of_exp = enode_of_exp ~ni ~line in
+    let mk_enode ?comm ?emit = mk_enode ~line ?comm ?emit in
+    match e.IL.e with
+    | IL.Fetch { IL.base = IL.Var n; rev_offset = [] } -> (
+        match resolve ni (G.SId.to_int n.IL.sid) with
+        | Some i -> i
+        | None -> sentinel_idx)
+    | IL.Fetch lval -> enode_of_lval ~ni ~line lval
+    | IL.Literal lit ->
+        let kind, value = Il_util.const_descr lit in
+        let parts =
+          if keep_value fc kind then kind :: Option.to_list value
+          else [ kind ]
+        in
+        let tag =
+          if kind = "string" then ConstString else ConstOther
+        in
+        mk_enode ~tag ~descr:(const_label lit) (leaf 0x13 parts) []
+    | IL.Cast (ty, e1) ->
+        let parts = if fc.ty_descrs then [ Il_util.ty_descr ty ] else [] in
+        mk_enode ~emit:false ~tag:BinOp
+          ~descr:("as " ^ Il_util.ty_descr ty)
+          (leaf 0x1A parts)
+          [ enode_of_exp e1 ]
+    | IL.Operator ((op, _), args) ->
+        let preds =
+          List.map
+            (fun a -> enode_of_exp (IL_helpers.exp_of_arg a))
+            args
+        in
+        let t = if List.length args >= 2 then BinOp else UnOp in
+        mk_enode
+          ~comm:(op_commutative op)
+          ~tag:t ~descr:(G.show_operator op)
+          (leaf 0x10 [ G.show_operator op; string_of_int (List.length args) ])
+          preds
+    | IL.Composite (ck, (_, xs, _)) ->
+        let ck_descr =
+          match ck with
+          | IL.Constructor _ when not fc.call_names -> "ctor"
+          | _ -> composite_descr ck
+        in
+        mk_enode ~emit:(xs <> []) ~tag:Construct ~descr:ck_descr
+          (leaf 0x17 [ ck_descr; string_of_int (List.length xs) ])
+          (List.map enode_of_exp xs)
+    | IL.RecordOrDict fes ->
+        (* one node per field: the parked per-field-record-features lever —
+           editing one field no longer kills the whole construction *)
+        let preds =
+          List.map
+            (function
+              | IL.Field (n, e1) ->
+                  let fparts =
+                    if fc.field_names then [ fst n.IL.ident ] else []
+                  in
+                  mk_enode ~tag:Field
+                    ~descr:("." ^ fst n.IL.ident ^ "=")
+                    (leaf 0x18 fparts)
+                    [ enode_of_exp e1 ]
+              | IL.Entry (k, v) ->
+                  mk_enode ~tag:Construct ~descr:"entry" (leaf 0x18 [])
+                    [ enode_of_exp k; enode_of_exp v ]
+              | IL.Spread e1 ->
+                  mk_enode ~emit:false ~tag:Construct ~descr:"spread"
+                    (leaf 0x19 []) [ enode_of_exp e1 ])
+            fes
+        in
+        mk_enode ~tag:Construct ~descr:"record"
+          (leaf 0x1C [ string_of_int (List.length fes) ])
+          preds
+    | IL.FixmeExp (_, any, eopt) ->
+        let toks =
+          if fc.macro_tokens then Il_util.token_strings_of_any any else []
+        in
+        mk_enode ~tag:MacroBag ~descr:"macro" (leaf 0x1F toks)
+          (match eopt with Some e1 -> [ enode_of_exp e1 ] | None -> [])
+
+  and enode_of_lval ~ni ~line (lval : IL.lval) : int =
+    (* one node per lval read; chain SHAPE is the seed, base + index
+       values are edges *)
+    let base_seed, base_preds =
+      match lval.IL.base with
+      | IL.Var n -> (
+          ( var_leaf,
+            match resolve ni (G.SId.to_int n.IL.sid) with
+            | Some i -> [ i ]
+            | None -> [ sentinel_idx ] ))
+      | IL.VarSpecial (sp, _) ->
+          (leaf 0x21 [ IL.show_var_special sp ], [])
+      | IL.Mem e -> (leaf 0x22 [], [ enode_of_exp ~ni ~line e ])
+    in
+    let offs = List.rev lval.IL.rev_offset in
+    let seed, preds =
+      List.fold_left
+        (fun (h, ps) (o : IL.offset) ->
+          match o.IL.o with
+          | IL.Dot n ->
+              let fparts =
+                if fc.field_names then [ fst n.IL.ident ] else []
+              in
+              (Fhash.mix h (leaf 0x15 fparts), ps)
+          | IL.Index e ->
+              ( Fhash.mix h (leaf 0x16 []),
+                ps @ [ enode_of_exp ~ni ~line e ] )
+          | IL.Slice i ->
+              (Fhash.mix h (leaf 0x23 [ string_of_int i ]), ps))
+        (base_seed, base_preds) offs
+    in
+    let tag, descr =
+      match offs with
+      | { IL.o = IL.Dot f; _ } :: _ -> (Field, "." ^ fst f.IL.ident)
+      | _ -> (Index, "[..]")
+    in
+    mk_enode ~line ~tag ~descr seed preds
+  in
+
+  (* exp-nodes mode: wire one INSTRUCTION/CONTROL node (the reserved idx,
+     which reaching defs point at) on top of the exp nodes. *)
+  let exp_wire (idx : int) (ni : int) (line : int) (nk : IL.node_kind) :
+      unit =
+    let set ?(comm = false) ?(emit = true) ~tag ~descr seed preds =
+      let d = Dynarray.get nodes idx in
+      d.hash <- seed;
+      d.prev <- seed;
+      d.commutative <- comm;
+      d.emit <- emit;
+      d.dtag <- tag;
+      d.dlabel <- descr;
+      d.dline <- line;
+      d.preds <- Array.of_list (List.mapi (fun pos i -> (i, pos)) preds)
+    in
+    let enode_of_exp = enode_of_exp ~ni ~line in
+    match nk with
+    | IL.NInstr i -> (
+        match i.IL.i with
+        | IL.Assign (lval, exp) -> (
+            match (lval.IL.base, lval.IL.rev_offset) with
+            | IL.Var _, [] ->
+                (* def anchor: pass-through to the RHS value node (covers
+                   bare copies too — Fetch-bare returns the def itself) *)
+                set ~emit:false ~tag:BinOp ~descr:"=" (leaf 0x01 [])
+                  [ enode_of_exp exp ]
+            | _ ->
+                let chain =
+                  List.fold_left
+                    (fun h (o : IL.offset) ->
+                      match o.IL.o with
+                      | IL.Dot n ->
+                          let fparts =
+                            if fc.field_names then [ fst n.IL.ident ]
+                            else []
+                          in
+                          Fhash.mix h (leaf 0x15 fparts)
+                      | IL.Index _ -> Fhash.mix h (leaf 0x16 [])
+                      | IL.Slice s ->
+                          Fhash.mix h (leaf 0x23 [ string_of_int s ]))
+                    (leaf 0x02 [])
+                    (List.rev lval.IL.rev_offset)
+                in
+                let base_preds =
+                  match lval.IL.base with
+                  | IL.Var n -> (
+                      match resolve ni (G.SId.to_int n.IL.sid) with
+                      | Some i2 -> [ i2 ]
+                      | None -> [ sentinel_idx ])
+                  | IL.VarSpecial _ -> []
+                  | IL.Mem e -> [ enode_of_exp e ]
+                in
+                let idx_preds =
+                  lval.IL.rev_offset |> List.rev
+                  |> List.filter_map (fun (o : IL.offset) ->
+                         match o.IL.o with
+                         | IL.Index e -> Some (enode_of_exp e)
+                         | _ -> None)
+                in
+                let t, dsc =
+                  match lval.IL.rev_offset with
+                  | { o = IL.Dot f; _ } :: _ ->
+                      (Field, "store ." ^ fst f.IL.ident)
+                  | _ -> (Index, "store [..]")
+                in
+                set ~tag:t ~descr:dsc chain
+                  (base_preds @ idx_preds @ [ enode_of_exp exp ]))
+        | IL.AssignAnon (_, _) ->
+            set ~emit:false ~tag:Construct ~descr:"lambda" (leaf 0x03 []) []
+        | IL.Call (_, fexp, args) ->
+            let ckind, cname, callee_preds =
+              match fexp.IL.e with
+              | IL.Fetch { IL.base = IL.Var fn; rev_offset = [] } -> (
+                  ( "named",
+                    fst fn.IL.ident,
+                    (* OptEdge: a global callee name is not dataflow *)
+                    match resolve ni (G.SId.to_int fn.IL.sid) with
+                    | Some i2 -> [ i2 ]
+                    | None -> [] ))
+              | IL.Fetch ({ IL.rev_offset = { o = IL.Dot m; _ } :: _; _ } as
+                          lv) ->
+                  ("method", fst m.IL.ident, [ enode_of_lval ~ni ~line lv ])
+              | _ -> ("dynamic", "", [ enode_of_exp fexp ])
+            in
+            let target_parts =
+              ckind
+              :: (if fc.call_names && cname <> "" then [ cname ] else [])
+            in
+            let arg_preds =
+              List.map
+                (fun a -> enode_of_exp (IL_helpers.exp_of_arg a))
+                args
+            in
+            let short = if cname = "" then ckind else cname in
+            set ~tag:Call
+              ~descr:
+                (Printf.sprintf "%s(%d)" (truncate 14 short)
+                   (List.length args))
+              (leaf 0x12 (target_parts @ [ string_of_int (List.length args) ]))
+              (callee_preds @ arg_preds)
+        | IL.CallSpecial (_, (sp, _), args) ->
+            set ~tag:Call
+              ~descr:(truncate 16 (IL.show_call_special sp))
+              (leaf 0x12
+                 [
+                   "special:" ^ IL.show_call_special sp;
+                   string_of_int (List.length args);
+                 ])
+              (List.map
+                 (fun a -> enode_of_exp (IL_helpers.exp_of_arg a))
+                 args)
+        | IL.New (_, ty, ctor, args) ->
+            let ty_part = if fc.ty_descrs then [ Il_util.ty_descr ty ] else [] in
+            set ~tag:Construct
+              ~descr:("new " ^ truncate 12 (Il_util.ty_descr ty))
+              (leaf 0x1B (ty_part @ [ string_of_int (List.length args) ]))
+              ((match ctor with Some e -> [ enode_of_exp e ] | None -> [])
+              @ List.map
+                  (fun a -> enode_of_exp (IL_helpers.exp_of_arg a))
+                  args)
+        | IL.FixmeInstr (_, any) ->
+            let toks =
+              if fc.macro_tokens then Il_util.token_strings_of_any any
+              else []
+            in
+            set ~tag:MacroBag ~descr:"macro!" (leaf 0x1F toks) [])
+    | IL.NCond (_, e) ->
+        set
+          ~emit:(not (Il_util.exp_is_trivial e))
+          ~tag:Control ~descr:"cond" (leaf 0x04 []) [ enode_of_exp e ]
+    | IL.NReturn (_, e) ->
+        set
+          ~emit:(not (Il_util.exp_is_trivial e))
+          ~tag:Control ~descr:"return" (leaf 0x05 []) [ enode_of_exp e ]
+    | IL.NThrow (_, e) ->
+        set ~tag:Control ~descr:"throw" (leaf 0x06 []) [ enode_of_exp e ]
+    | _ -> assert false
+  in
+
   (* Pass 2: seed hashes + predecessor wiring. *)
   pending
   |> List.iter (fun (idx, ni, nk) ->
@@ -680,7 +962,9 @@ let graph_of ?(fc : cfg = !base_cfg) ?(iters = 1) (fcfg : IL.fun_cfg) :
                | None -> false)
            | _ -> false
          in
-         if not grafted then (
+         if not grafted then
+           if fc.exp_nodes then exp_wire idx ni (line_of nk) nk
+           else (
            let l =
              match nk with
              | IL.NInstr i -> local_of_instr ~fc i
@@ -785,6 +1069,9 @@ let delta_salt = leaf 0x5A [ "delta" ]
 
 let extract_delta ?(base : cfg = !base_cfg) ?(iters = 1) ~(rich : cfg)
     (fcfg : IL.fun_cfg) : feature list =
+  (* exp_nodes changes the node STRUCTURE, not the signal: rich must agree
+     with base or the per-index hash comparison below is meaningless *)
+  let rich = { rich with exp_nodes = base.exp_nodes } in
   let gb = graph_of ~fc:base ~iters fcfg in
   let gr = graph_of ~fc:rich ~iters fcfg in
   let n = Array.length gr.dnodes in
