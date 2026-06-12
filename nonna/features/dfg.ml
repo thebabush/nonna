@@ -117,6 +117,14 @@ type cfg = {
          instead of collapsing into the consumer's seed: an edit then
          poisons only its k-hop neighborhood, not the whole tree, and
          depth means the same thing inside and across instructions *)
+  thru_copies : bool;
+      (* copy-like definitions (bare copy, casts, x = s.field) are
+         transparent to dataflow: consumers bind through them to the
+         underlying def. Kernel 6.10->6.16 is full of one-line
+         type-laundering refactors (u32 *x param -> x = state->x) that
+         are invisible at depth 0 but poison every consumer's depth-1
+         hash; this pushes through them. Edges only — round-0 features
+         are unchanged. *)
 }
 
 let structural_cfg =
@@ -130,6 +138,7 @@ let structural_cfg =
     param_pos = false;
     macro_tokens = false;
     exp_nodes = false;
+    thru_copies = false;
   }
 
 let semantic_cfg =
@@ -143,6 +152,7 @@ let semantic_cfg =
     param_pos = true;
     macro_tokens = true;
     exp_nodes = false; (* structural choice, not a signal channel *)
+    thru_copies = false; (* ditto *)
   }
 
 (* does this literal kind's VALUE go into the seed under [fc]? *)
@@ -196,6 +206,7 @@ let cfg_bits (c : cfg) : int =
   lor (if c.param_pos then 64 else 0)
   lor (if c.macro_tokens then 128 else 0)
   lor (if c.exp_nodes then 256 else 0)
+  lor (if c.thru_copies then 512 else 0)
 
 (* Recursively hash a side-effect-free exp; also collect the names it reads,
    in traversal order (these become DFG predecessor edges). *)
@@ -305,10 +316,11 @@ type local = {
   emit : bool;
   ltag : tag;
   descr : string; (* human-readable, for graph dumps *)
+  lthru : bool; (* transparent to dataflow (thru_copies) *)
 }
 
 let mk ?(comm = false) ?(emit = true) ~tag ~descr seed pnames =
-  { seed; pnames; commutative = comm; emit; ltag = tag; descr }
+  { seed; pnames; commutative = comm; emit; ltag = tag; descr; lthru = false }
 
 let edges ns = List.map (fun n -> Edge n) ns
 
@@ -322,6 +334,23 @@ let const_label lit =
       if kind = "string" then "\"" ^ truncate 10 v ^ "\"" else truncate 12 v
   | None -> kind
 
+(* Copy-like RHS: the value is some def passed through unchanged-ish —
+   a bare read, a field read (Dot offsets only; Index/Mem add real
+   inputs), or casts of those. Exactly one underlying source. *)
+let rec copy_like (e : IL.exp) : bool =
+  match e.IL.e with
+  | IL.Fetch { IL.base; rev_offset } ->
+      List.for_all
+        (fun (o : IL.offset) ->
+          match o.IL.o with IL.Dot _ -> true | _ -> false)
+        rev_offset
+      && (match base with
+         | IL.Var _ -> true
+         | IL.Mem e1 -> copy_like e1 (* p->f deref: Mem base *)
+         | IL.VarSpecial _ -> false)
+  | IL.Cast (_, e1) -> copy_like e1
+  | _ -> false
+
 (* Classify + locally hash one IL instruction. *)
 let local_of_instr ~(fc : cfg) (i : IL.instr) : local =
   let hash_exp = hash_exp ~fc in
@@ -330,10 +359,11 @@ let local_of_instr ~(fc : cfg) (i : IL.instr) : local =
   | IL.Assign (lval, exp) -> (
       let hexp, rhs_names = hash_exp exp in
       match (lval.IL.base, lval.IL.rev_offset) with
-      | IL.Var _, [] -> (
+      | IL.Var _, [] ->
           let seed = Fhash.mix (leaf 0x01 []) hexp in
           let preds = edges rhs_names in
-          match exp.IL.e with
+          let l =
+            match exp.IL.e with
           | IL.Fetch { IL.base = IL.Var _; rev_offset = [] } ->
               (* bare copy: propagate through, don't emit *)
               mk ~emit:false ~tag:BinOp ~descr:"copy" seed preds
@@ -358,10 +388,12 @@ let local_of_instr ~(fc : cfg) (i : IL.instr) : local =
                 ~comm:(op_commutative op)
                 ~tag:t ~descr:(G.show_operator op) seed preds
           | IL.FixmeExp _ -> mk ~tag:MacroBag ~descr:"macro" seed preds
-          | IL.Cast (ty, _) ->
-              mk ~emit:false ~tag:BinOp
-                ~descr:("as " ^ Il_util.ty_descr ty)
-                seed preds)
+            | IL.Cast (ty, _) ->
+                mk ~emit:false ~tag:BinOp
+                  ~descr:("as " ^ Il_util.ty_descr ty)
+                  seed preds
+          in
+          { l with lthru = fc.thru_copies && copy_like exp }
       | _ ->
           (* store: x.f = v / x[i] = v — emits, defines nothing (v1 parity) *)
           let hl, lnames = hash_lval lval in
@@ -467,6 +499,7 @@ type dnode = {
   mutable dlabel : string;
   mutable dkind : nkind;
   mutable dline : int; (* source line (via orig), 0 = unknown *)
+  mutable dthrough : bool; (* transparent to dataflow (thru_copies) *)
 }
 
 let fresh_dnode () =
@@ -480,6 +513,7 @@ let fresh_dnode () =
     dlabel = "";
     dkind = KOp;
     dline = 0;
+    dthrough = false;
   }
 
 let mask62 = 0x3FFFFFFFFFFFFFFF
@@ -808,6 +842,16 @@ let graph_of ?(fc : cfg = !base_cfg) ?(iters = 1) (fcfg : IL.fun_cfg) :
       d.preds <- Array.of_list (List.mapi (fun pos i -> (i, pos)) preds)
     in
     let enode_of_exp = enode_of_exp ~ni ~line in
+    let rec underlying_def (e : IL.exp) : int =
+      match e.IL.e with
+      | IL.Cast (_, e1) -> underlying_def e1
+      | IL.Fetch { IL.base = IL.Var n; _ } -> (
+          match resolve ni (G.SId.to_int n.IL.sid) with
+          | Some i2 -> i2
+          | None -> sentinel_idx)
+      | IL.Fetch { IL.base = IL.Mem e1; _ } -> underlying_def e1
+      | _ -> sentinel_idx
+    in
     match nk with
     | IL.NInstr i -> (
         match i.IL.i with
@@ -815,9 +859,15 @@ let graph_of ?(fc : cfg = !base_cfg) ?(iters = 1) (fcfg : IL.fun_cfg) :
             match (lval.IL.base, lval.IL.rev_offset) with
             | IL.Var _, [] ->
                 (* def anchor: pass-through to the RHS value node (covers
-                   bare copies too — Fetch-bare returns the def itself) *)
-                set ~emit:false ~tag:BinOp ~descr:"=" (leaf 0x01 [])
-                  [ enode_of_exp exp ]
+                   bare copies too — Fetch-bare returns the def itself).
+                   thru_copies: copy-like RHS binds the anchor to the
+                   UNDERLYING def; the rhs node is still built so its
+                   round-0 feature emits, it's just off the use chain. *)
+                let thru = fc.thru_copies && copy_like exp in
+                let rhs = enode_of_exp exp in
+                let preds = if thru then [ underlying_def exp ] else [ rhs ] in
+                (Dynarray.get nodes idx).dthrough <- thru;
+                set ~emit:false ~tag:BinOp ~descr:"=" (leaf 0x01 []) preds
             | _ ->
                 let chain =
                   List.fold_left
@@ -996,6 +1046,7 @@ let graph_of ?(fc : cfg = !base_cfg) ?(iters = 1) (fcfg : IL.fun_cfg) :
            d.dtag <- l.ltag;
            d.dlabel <- l.descr;
            d.dline <- line_of nk;
+           d.dthrough <- l.lthru;
            let preds =
              l.pnames
              |> List.mapi (fun pos pn -> (pos, pn))
@@ -1020,6 +1071,23 @@ let graph_of ?(fc : cfg = !base_cfg) ?(iters = 1) (fcfg : IL.fun_cfg) :
 
   let _ = build fcfg IntMap.empty in
   let arr = Dynarray.to_array nodes in
+
+  (* thru_copies: every edge into a transparent single-pred node is
+     rewritten to its terminal def (transitively; cycle-guarded for
+     x = x.next loops). Transparent nodes keep their own preds and
+     round-0 emission — they just stop being a propagation hop. *)
+  if fc.thru_copies then begin
+    let rec chase i seen =
+      let d = arr.(i) in
+      if (not d.dthrough) || Array.length d.preds <> 1 || List.mem i seen
+      then i
+      else chase (fst d.preds.(0)) (i :: seen)
+    in
+    Array.iter
+      (fun d ->
+        d.preds <- Array.map (fun (pi, pos) -> (chase pi [], pos)) d.preds)
+      arr
+  end;
 
   (* Iterative propagation, snapshotting each round. *)
   let snapshot () = Array.map (fun d -> d.hash) arr in

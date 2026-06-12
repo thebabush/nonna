@@ -323,6 +323,15 @@ vendor/opengrep               # pinned engine (git submodule @ 8ee180dc)
 - Per-field record-construction features — delivered on Rust/Python by
   `exp_nodes` (each record field is its own node); C still collapsed
   (measured tie, kept the simpler winner).
+- `thru_copies` (measured 2026-06-12, kept OFF): copy-like defs (copy /
+  cast / `x = s.field`) made transparent to dataflow so consumers bind
+  through to the underlying def. Surgically fixes the kernel
+  type-laundering pairs (chacha_permute j@1 0.30→0.99, bpf_dynptr_slice
+  0.56→1.00) but aggregate is a wash everywhere: C still prefers depth 0
+  (where the poison chain doesn't exist — depth 0 IS copy-transparency,
+  applied indiscriminately), Rust/Python exp@2 flat (0.766→0.763 /
+  0.950→0.952). The rescued pair class is too thin and the erased
+  copy-hop signal pays back the gains.
 - Dual-profile indexing (structural wins renamed, full wins evolved — complementary).
 - Float-value channel on a float-heavy corpus; per-language sweeps (N8).
 - Loop-idiom normalization (index-while ↔ foreach) if cross-style recall matters.
