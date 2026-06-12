@@ -111,9 +111,17 @@ bash tests/sweep.sh bench-out/paths.txt   # hyperparameter sweep (MRR/recall@k)
 uv run tests/llm_judge.py --pairs ... --scores ...   # LLM-judged pair quality
 ```
 
-Current headline numbers (Rust benchmark, 56k-unit corpus): ALL MRR 0.963;
-renamed clones rank-1 98.7%; version-evolved functions r@10 0.92; candidate
-miss ≤ 1.6%. Full tables and caveats in DESIGN.md.
+Current headline numbers (rank MRR through the full pipeline; defaults are
+tuned per language and need no flags):
+
+| benchmark                          | ALL   | exact | renamed | evolved MRR / r@5 |
+|------------------------------------|-------|-------|---------|-------------------|
+| Rust (crates, 56k units)           | 0.963 | 1.000 | 0.987   | 0.766 / 0.859     |
+| Python (PyPI, 17k units)           | 0.970 | 1.000 | 0.986   | 0.950 / 0.986     |
+| C (Linux v6.10↔v6.16, 103k units)  | 0.918 | 1.000 | 1.000   | 0.888 / 0.944     |
+
+"evolved" = the same function edited between two real releases — the hard
+kind. Full tables, per-language configs, and caveats in DESIGN.md.
 
 ## 📜 License
 
