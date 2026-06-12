@@ -232,6 +232,7 @@ let rec strip_profile acc = function
                | "ty_descrs" -> { c with Dfg.ty_descrs = true }
                | "param_pos" -> { c with Dfg.param_pos = true }
                | "macro_tokens" -> { c with Dfg.macro_tokens = true }
+               | "exp_nodes" -> { c with Dfg.exp_nodes = true }
                | _ ->
                    prerr_endline ("unknown --with flag: " ^ f);
                    exit 1));
