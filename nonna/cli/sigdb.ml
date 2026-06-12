@@ -19,7 +19,11 @@ let profile_tag () : string =
      else "structural")
     (match !Dfg.iterations_override with
     | Some n -> string_of_int n
-    | None -> "L" (* per-language defaults *))
+    | None ->
+        Printf.sprintf "r%dp%dc%d"
+          (Dfg.iters_for (Some Lang.Rust))
+          (Dfg.iters_for (Some Lang.Python))
+          (Dfg.iters_for (Some Lang.C)))
     (Dfg.cfg_bits (Dfg.base_cfg_for Lang.Rust))
     (Dfg.cfg_bits (Dfg.base_cfg_for Lang.Python))
     (Dfg.cfg_bits (Dfg.base_cfg_for Lang.C))
