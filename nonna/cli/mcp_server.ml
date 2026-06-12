@@ -263,11 +263,13 @@ let diff_functions (args : J.t) : J.t =
       let ga =
         Dfg.graph_of
           ~fc:(Dfg.base_cfg_for ua.Units.ulang)
+          ~iters:(Dfg.iters_for (Some ua.Units.ulang))
           ua.Units.ucfg
       in
       let gb =
         Dfg.graph_of
           ~fc:(Dfg.base_cfg_for ub.Units.ulang)
+          ~iters:(Dfg.iters_for (Some ub.Units.ulang))
           ub.Units.ucfg
       in
       let text =
