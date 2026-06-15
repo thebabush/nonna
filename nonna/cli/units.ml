@@ -124,7 +124,8 @@ let units_of_file (file : string) : unit_info list =
 (* Languages we index. Rust-focused (D1), but multi-language comes via the
    shared IL — these are the ones exercised by the sanity dataset. *)
 let indexable_exts =
-  [ ".rs"; ".py"; ".js"; ".ts"; ".go"; ".java"; ".c"; ".h" ]
+  [ ".rs"; ".py"; ".js"; ".ts"; ".go"; ".java"; ".c"; ".h";
+    ".cc"; ".cpp"; ".cxx"; ".cppm"; ".hpp"; ".hh"; ".hxx" ]
 
 (* build outputs / dependency caches, never source corpus *)
 let skip_dirs = [ "target"; "_build"; "node_modules"; "dist"; "__pycache__" ]

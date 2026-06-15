@@ -55,15 +55,28 @@ let c_keywords =
     "NULL"; "true"; "false"; "bool";
   ]
 
+(* C++ = C keywords plus the C++-specific ones that are keyword-like in practice *)
+let cpp_keywords =
+  c_keywords
+  @ [
+      "class"; "namespace"; "template"; "typename"; "public"; "private";
+      "protected"; "virtual"; "override"; "final"; "new"; "delete"; "this";
+      "operator"; "friend"; "explicit"; "using"; "nullptr"; "constexpr";
+      "noexcept"; "throw"; "try"; "catch"; "mutable"; "decltype";
+      "static_cast"; "dynamic_cast"; "reinterpret_cast"; "const_cast";
+    ]
+
 let rust_kw_tbl = kw_tbl_of rust_keywords
 let python_kw_tbl = kw_tbl_of python_keywords
 let c_kw_tbl = kw_tbl_of c_keywords
+let cpp_kw_tbl = kw_tbl_of cpp_keywords
 
 (* ground-truth normalization must speak the file's language *)
 let kw_tbl_for (file : string) =
   match Filename.extension file with
   | ".py" -> python_kw_tbl
   | ".c" | ".h" -> c_kw_tbl
+  | ".cc" | ".cpp" | ".cxx" | ".cppm" | ".hpp" | ".hh" | ".hxx" -> cpp_kw_tbl
   | _ -> rust_kw_tbl
 
 let is_ident (s : string) =

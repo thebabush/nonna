@@ -68,7 +68,11 @@ let iters_for (lang : Lang.t option) : int =
   | None -> (
       match lang with
       | Some Lang.C -> 0
-      | Some (Lang.Rust | Lang.Python | Lang.Python2 | Lang.Python3) ->
+      (* C++ behaves like Rust/Python, not C: exp-node features at depth 2 win.
+         Tuned via LLM-judge correlation on a Chrome (net/) corpus, 2026-06-15
+         (n=62 sonnet-judged pairs): spearman(jaccard, judge overall)
+         0.859 (depth0/no-exp) -> 0.879 (+exp) -> 0.890 (+exp, depth2). *)
+      | Some (Lang.Rust | Lang.Python | Lang.Python2 | Lang.Python3 | Lang.Cpp) ->
           2 (* exp-node features specialize per round *)
       | _ -> 1)
 
@@ -187,6 +191,11 @@ let base_cfg_for (lang : Lang.t) : cfg =
      strings are API identity in C, same as Python; the other channels are
      flat and leak identifiers into renamed pairs *)
   | Lang.C -> { b with string_values = true; field_names = true }
+  (* C++ keeps C's string/field channels AND adds exp_nodes (decomposed
+     expression graphs), like Rust/Python. Tuned via LLM-judge correlation on a
+     Chrome net/ corpus (2026-06-15, n=62): +exp_nodes lifted spearman 0.859->0.879
+     (0.890 with depth-2 iters). call_names measured flat (0.859) — left off. *)
+  | Lang.Cpp -> { b with string_values = true; field_names = true; exp_nodes = true }
   (* exp-nodes sweeps (2026-06): decomposed expression graphs at depth 2
      win the evolved kind on Rust (MRR 0.723->0.766, r@5 0.812->0.859) AND
      Python (0.929->0.950, r@5 0.964->0.986), everything else flat — an
