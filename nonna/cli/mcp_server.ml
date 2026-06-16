@@ -63,8 +63,17 @@ let workspace_fns = ref 0
 let dep_count = ref 0
 let dep_fns = ref 0
 
+(* Opt-in gate: nonna only indexes a workspace that explicitly enables it with a
+   `.nonna` marker file at the root. Registered at user scope, the server is
+   spawned in every repo; without this gate it would index them all. *)
+let marker_name = ".nonna"
+let enabled = ref false
+
 let index_async (root : string) : unit =
   index_root := root;
+  enabled := Sys.file_exists (Filename.concat root marker_name);
+  if not !enabled then indexing_done := true
+  else
   ignore
     (Thread.create
        (fun () ->
@@ -107,6 +116,7 @@ let ext_of_language = function
   | "go" -> ".go"
   | "java" -> ".java"
   | "c" -> ".c"
+  | "cpp" | "c++" | "cxx" | "cc" -> ".cc"
   | _ -> ".rs"
 
 (* Drafted code is parsed via a temp file (deleted afterwards); its text is
@@ -313,7 +323,7 @@ let side_props p what =
   [
     (p ^ "_code", "string", what ^ " as a code string (instead of a file)");
     (p ^ "_language", "string",
-     "language of " ^ p ^ "_code: rust|python|javascript|typescript|go (default rust)");
+     "language of " ^ p ^ "_code: rust|python|javascript|typescript|go|java|c|cpp (default rust)");
     (p ^ "_file", "string", "absolute path containing " ^ what);
     (p ^ "_line", "integer", "a line inside the function (1-based)");
     (p ^ "_name", "string", "the function's name (alternative to line)");
@@ -337,7 +347,7 @@ let tool_defs : J.t =
               [
                 ("code", "string", "the drafted function source code");
                 ("language", "string",
-                 "rust|python|javascript|typescript|go|java|c (default rust)");
+                 "rust|python|javascript|typescript|go|java|c|cpp (default rust)");
                 ("top_k", "integer", "max results (default 5)");
                 ("threshold", "number", "min max(jaccard,containment) (default 0.25)");
               ]
@@ -388,13 +398,27 @@ let tool_defs : J.t =
 let call_tool (name : string) (args : J.t) : J.t =
   match name with
   | "status" ->
-      tool_text
+      if not !enabled then
+        tool_text
+          (Printf.sprintf
+             "root: %s\nnonna is disabled here: no `%s` marker file at the \
+              workspace root, so nothing is indexed. Create one (e.g. `touch \
+              %s`) and restart the session to enable structural search."
+             !index_root marker_name marker_name)
+      else
+        tool_text
+          (Printf.sprintf
+             "root: %s\nindexed functions: %d (%d workspace + %d from %d \
+              deps/std)\nindexing: %s"
+             !index_root (Engine.size !engine) !workspace_fns !dep_fns
+             !dep_count
+             (if !indexing_done then "done" else "in progress"))
+  | ("find_similar" | "query_similar" | "diff_functions") when not !enabled ->
+      tool_text ~is_error:true
         (Printf.sprintf
-           "root: %s\nindexed functions: %d (%d workspace + %d from %d \
-            deps/std)\nindexing: %s"
-           !index_root (Engine.size !engine) !workspace_fns !dep_fns
-           !dep_count
-           (if !indexing_done then "done" else "in progress"))
+           "nonna is disabled for %s: no `%s` marker file at the workspace \
+            root. Create one (`touch %s`) and restart the session to enable it."
+           !index_root marker_name marker_name)
   | "find_similar" -> (
       match str_arg args "code" with
       | None -> tool_text ~is_error:true "missing required argument: code"
