@@ -12,6 +12,8 @@
  *                   whose hashes never appear on the other side at ANY
  *                   propagation depth, grouped by source line. For a
  *                   bug/fix pair: A−B ≈ the bug, B−A ≈ the fix.
+ *   find_duplicates whole-corpus clone pairs (no query fn) + filters —
+ *                   the dedup/refactor view; complements find_similar.
  *   status          index size / readiness.
  *)
 
@@ -299,6 +301,46 @@ let diff_functions (args : J.t) : J.t =
       in
       tool_text text
 
+(* ── find_duplicates: whole-corpus clone pairs (no query function) ───────── *)
+
+let dup_line (p : Engine.pair) : string =
+  Printf.sprintf "j %.3f c %.3f  %s (%s:%d-%d)  <->  %s (%s:%d-%d)" p.Engine.j
+    p.Engine.c p.Engine.a.Engine.name p.Engine.a.Engine.file
+    p.Engine.a.Engine.line_start p.Engine.a.Engine.line_end p.Engine.b.Engine.name
+    p.Engine.b.Engine.file p.Engine.b.Engine.line_start p.Engine.b.Engine.line_end
+
+let find_duplicates (args : J.t) : J.t =
+  if not !indexing_done then
+    tool_text ~is_error:true
+      (Printf.sprintf
+         "indexing still in progress (%d functions so far) — `duplicates` scans \
+          the whole index, so wait until `status` reports done."
+         (Engine.size !engine))
+  else
+    let flt =
+      {
+        Engine.threshold =
+          Option.value (float_arg args "threshold") ~default:0.7;
+        by_max =
+          (match str_arg args "metric" with Some "max" -> true | _ -> false);
+        name_sub = Option.value (str_arg args "name") ~default:"";
+        file_sub = Option.value (str_arg args "file") ~default:"";
+        min_lines = Option.value (int_arg args "min_lines") ~default:0;
+        min_features = Option.value (int_arg args "min_features") ~default:0;
+        limit = Option.value (int_arg args "limit") ~default:50;
+      }
+    in
+    let pairs = Engine.duplicates_filtered !engine flt in
+    if pairs = [] then
+      tool_text
+        (Printf.sprintf
+           "No duplicate pairs above the given filters in the %d-function corpus."
+           (Engine.size !engine))
+    else
+      tool_text
+        (Printf.sprintf "%d duplicate pair(s):\n\n%s" (List.length pairs)
+           (String.concat "\n" (List.map dup_line pairs)))
+
 (* ── Tools ───────────────────────────────────────────────────────────────── *)
 
 let schema (props : (string * string * string) list) (required : string list) :
@@ -388,6 +430,38 @@ let tool_defs : J.t =
         ];
       `Assoc
         [
+          ("name", `String "find_duplicates");
+          ( "description",
+            `String
+              "List structurally similar function PAIRS across the whole \
+               indexed corpus — no query function needed (the dedup / refactor \
+               view; complements find_similar's single-function reuse check). \
+               Each pair reports jaccard and containment. Filters: threshold, \
+               metric (max|jaccard), name and file substrings (match either \
+               side), min_lines, min_features, limit." );
+          ( "inputSchema",
+            schema
+              [
+                ("threshold", "number",
+                 "min similarity on the gated metric (default 0.7)");
+                ("metric", "string",
+                 "gate the threshold on jaccard (default) or max(jaccard,containment) \
+                  — pass \"max\" to also surface subset/'call it instead' dupes");
+                ("name", "string",
+                 "only pairs where either function name contains this substring");
+                ("file", "string",
+                 "only pairs where either file path contains this substring");
+                ("min_lines", "integer",
+                 "drop pairs whose smaller side has fewer code lines");
+                ("min_features", "integer",
+                 "drop pairs whose smaller side has fewer features");
+                ("limit", "integer",
+                 "max pairs returned, jaccard desc (default 50)");
+              ]
+              [] );
+        ];
+      `Assoc
+        [
           ("name", `String "status");
           ( "description",
             `String "Index status: corpus root, size, readiness." );
@@ -413,7 +487,8 @@ let call_tool (name : string) (args : J.t) : J.t =
              !index_root (Engine.size !engine) !workspace_fns !dep_fns
              !dep_count
              (if !indexing_done then "done" else "in progress"))
-  | ("find_similar" | "query_similar" | "diff_functions") when not !enabled ->
+  | ("find_similar" | "query_similar" | "diff_functions" | "find_duplicates")
+    when not !enabled ->
       tool_text ~is_error:true
         (Printf.sprintf
            "nonna is disabled for %s: no `%s` marker file at the workspace \
@@ -467,6 +542,7 @@ let call_tool (name : string) (args : J.t) : J.t =
                       u.Units.uline_start)
                    (query_unit u ~threshold ~top_k))))
   | "diff_functions" -> diff_functions args
+  | "find_duplicates" -> find_duplicates args
   | _ -> tool_text ~is_error:true ("unknown tool: " ^ name)
 
 (* ── Dispatch ────────────────────────────────────────────────────────────── *)
@@ -487,7 +563,10 @@ let instructions =
    instead' signal even when jaccard is moderate. The workspace is indexed \
    at startup in the background (seconds for normal repos, ~a minute for \
    huge ones): call `status` first; an empty result while indexing is still \
-   in progress is inconclusive, not a no-match."
+   in progress is inconclusive, not a no-match. find_similar/query_similar \
+   take one function and rank existing matches; find_duplicates needs no query \
+   and lists similar PAIRS across the whole corpus (dedup/refactor), with \
+   name/file/size/threshold filters."
 
 (* Returns Some response for requests, None for notifications. *)
 let result_msg (id : J.t) (result : J.t) : J.t =

@@ -148,7 +148,42 @@ type pair = {
   c : float;
 }
 
-let duplicates_full (t : t) ~(threshold : float) : pair list =
+(* Case-insensitive substring test (empty needle matches everything). *)
+let contains_ci ~(sub : string) (s : string) : bool =
+  sub = ""
+  ||
+  let s = String.lowercase_ascii s and sub = String.lowercase_ascii sub in
+  let ls = String.length s and lsub = String.length sub in
+  let rec at i = i + lsub <= ls && (String.sub s i lsub = sub || at (i + 1)) in
+  at 0
+
+(* Post-scan filters for whole-corpus dupe finding ("nonna dupes" / the MCP
+   find_duplicates tool / the explorer feed). All cheap, all AND-ed:
+   [name_sub]/[file_sub] match EITHER side (""=off); [min_lines]/[min_features]
+   gate the SMALLER side; [limit]<=0 = unbounded. [by_max] picks the score the
+   threshold gates on — max(j,c) (the "call it instead" signal) or jaccard. *)
+type dup_filter = {
+  threshold : float;
+  by_max : bool;
+  name_sub : string;
+  file_sub : string;
+  min_lines : int;
+  min_features : int;
+  limit : int;
+}
+
+let default_filter =
+  {
+    threshold = 0.5;
+    by_max = true;
+    name_sub = "";
+    file_sub = "";
+    min_lines = 0;
+    min_features = 0;
+    limit = 0;
+  }
+
+let duplicates_filtered (t : t) (flt : dup_filter) : pair list =
   let seen = Hashtbl.create 256 in
   let out = ref [] in
   for fid = 0 to size t - 1 do
@@ -161,41 +196,30 @@ let duplicates_full (t : t) ~(threshold : float) : pair list =
                Hashtbl.replace seen key ();
                let csg, cmeta = t.sigs.(cand) in
                if not (nests meta cmeta) then
+                 let af = Signature.size sg and bf = Signature.size csg in
                  let j = Signature.jaccard sg csg in
                  let c =
                    Float.max
                      (Signature.containment ~query:sg csg)
                      (Signature.containment ~query:csg sg)
                  in
-                 if Float.max j c >= threshold then
+                 let score = if flt.by_max then Float.max j c else j in
+                 if
+                   score >= flt.threshold
+                   && min meta.code_lines cmeta.code_lines >= flt.min_lines
+                   && min af bf >= flt.min_features
+                   && (contains_ci ~sub:flt.name_sub meta.name
+                      || contains_ci ~sub:flt.name_sub cmeta.name)
+                   && (contains_ci ~sub:flt.file_sub meta.file
+                      || contains_ci ~sub:flt.file_sub cmeta.file)
+                 then
                    out :=
-                     {
-                       a = meta;
-                       b = cmeta;
-                       a_features = Signature.size sg;
-                       b_features = Signature.size csg;
-                       j;
-                       c;
-                     }
+                     { a = meta; b = cmeta; a_features = af; b_features = bf; j; c }
                      :: !out)))
   done;
-  List.sort (fun (p : pair) (q : pair) -> compare q.j p.j) !out
+  let sorted = List.sort (fun (p : pair) (q : pair) -> compare q.j p.j) !out in
+  if flt.limit > 0 then List.filteri (fun i _ -> i < flt.limit) sorted else sorted
 
-(* All intra-index pairs above the threshold ("nonna dupes"). *)
-let duplicates (t : t) ~(threshold : float) : (meta * meta * float) list =
-  let seen = Hashtbl.create 256 in
-  let out = ref [] in
-  for fid = 0 to size t - 1 do
-    let sg, meta = t.sigs.(fid) in
-    candidates t sg
-    |> List.iter (fun cand ->
-           if cand <> fid then (
-             let key = (min fid cand, max fid cand) in
-             if not (Hashtbl.mem seen key) then (
-               Hashtbl.replace seen key ();
-               let csg, cmeta = t.sigs.(cand) in
-               if not (nests meta cmeta) then
-                 let j = Signature.jaccard sg csg in
-                 if j >= threshold then out := (meta, cmeta, j) :: !out)))
-  done;
-  List.sort (fun (_, _, a) (_, _, b) -> compare b a) !out
+(* The explorer feed: max(j,c)-gated, unfiltered, all pairs. *)
+let duplicates_full (t : t) ~(threshold : float) : pair list =
+  duplicates_filtered t { default_filter with threshold }

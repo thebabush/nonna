@@ -55,8 +55,6 @@ val query :
   max_results:int ->
   hit list
 
-val duplicates : t -> threshold:float -> (meta * meta * float) list
-
 type pair = {
   a : meta;
   b : meta;
@@ -66,4 +64,19 @@ type pair = {
   c : float; (* containment, max of both directions *)
 }
 
+(* Whole-corpus dupe finding with filters (CLI [dupes], MCP find_duplicates). *)
+type dup_filter = {
+  threshold : float; (* min score on the gated metric *)
+  by_max : bool; (* gate on max(j,c) (default) vs jaccard only *)
+  name_sub : string; (* substring on either side's name ("" = off) *)
+  file_sub : string; (* substring on either side's file ("" = off) *)
+  min_lines : int; (* min code_lines on the smaller side *)
+  min_features : int; (* min signature size on the smaller side *)
+  limit : int; (* cap on results sorted by jaccard desc (<=0 = all) *)
+}
+
+val default_filter : dup_filter
+val duplicates_filtered : t -> dup_filter -> pair list
+
 val duplicates_full : t -> threshold:float -> pair list
+(** Unfiltered max(j,c)-gated feed for the explorer. *)
