@@ -46,7 +46,8 @@ embedding the parser must call `Parsing_init.init ()` (ours do).
 ```sh
 nonna query <corpus...> -- <draft.rs>      # find fns similar to each fn in draft
 nonna dupes <dir> [-t 0.5]                 # intra-corpus clone pairs
-#   filters: --metric max|jaccard, --name/--file SUB, --min-lines/--min-features N, -n LIMIT
+#   filters: --metric max|jaccard, --name SUB, --include/--exclude SUB,..,
+#            --min-lines/--min-features N, -n LIMIT
 nonna features <file>                      # debug: per-fn feature dump
 nonna graph <file> --fn NAME [-o DIR]      # DOT per propagation round (+ source)
 nonna dump-il <file> [--fn NAME]           # compact IL CFG
@@ -78,8 +79,8 @@ claude mcp add --transport http nonna http://127.0.0.1:8976/mcp
 Tools: `find_similar` (drafted code → ranked existing fns with source),
 `query_similar` (file + line|name), `diff_functions` (A∩B scores + per-side
 unique regions by source line — for a bug/fix pair, A−B ≈ bug, B−A ≈ fix),
-`find_duplicates` (whole-corpus clone pairs, no query fn — the dedup/refactor
-view, with threshold/metric/name/file/size filters), `status`. The server's
+`find_duplicates` (workspace clone pairs, no query fn — the dedup/refactor
+view, with threshold/metric/name/include-exclude-path/size filters), `status`. The server's
 `instructions` explain score semantics to the agent
 (jaccard ≈ 1: same up to renaming; containment ≈ 1: "it does everything yours
 does, plus more").

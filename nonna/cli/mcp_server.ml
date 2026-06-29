@@ -108,6 +108,15 @@ let index_async (root : string) : unit =
 let str_arg args k = try Some (JU.member k args |> JU.to_string) with _ -> None
 let int_arg args k = try Some (JU.member k args |> JU.to_int) with _ -> None
 
+(* A JSON array of strings (missing / wrong-typed -> []). Tolerates a bare
+   string too, so an agent passing "src/" instead of ["src/"] still works. *)
+let str_list_arg args k : string list =
+  match (try Some (JU.member k args) with _ -> None) with
+  | Some (`List l) ->
+      List.filter_map (fun j -> try Some (JU.to_string j) with _ -> None) l
+  | Some (`String s) when s <> "" -> [ s ]
+  | _ -> []
+
 let float_arg args k =
   try Some (JU.member k args |> JU.to_number) with _ -> None
 
@@ -338,7 +347,8 @@ let find_duplicates (args : J.t) : J.t =
         by_max =
           (match str_arg args "metric" with Some "max" -> true | _ -> false);
         name_sub = Option.value (str_arg args "name") ~default:"";
-        file_sub = Option.value (str_arg args "file") ~default:"";
+        include_paths = str_list_arg args "include";
+        exclude_paths = str_list_arg args "exclude";
         min_lines = Option.value (int_arg args "min_lines") ~default:0;
         min_features = Option.value (int_arg args "min_features") ~default:0;
         limit = Option.value (int_arg args "limit") ~default:50;
@@ -372,11 +382,16 @@ let schema (props : (string * string * string) list) (required : string list) :
         `Assoc
           (List.map
              (fun (name, ty, descr) ->
-               ( name,
-                 `Assoc
+               let spec =
+                 if ty = "string[]" then
                    [
-                     ("type", `String ty); ("description", `String descr);
-                   ] ))
+                     ("type", `String "array");
+                     ("items", `Assoc [ ("type", `String "string") ]);
+                     ("description", `String descr);
+                   ]
+                 else [ ("type", `String ty); ("description", `String descr) ]
+               in
+               (name, `Assoc spec))
              props) );
       ("required", `List (List.map (fun r -> `String r) required));
     ]
@@ -458,8 +473,8 @@ let tool_defs : J.t =
                single-function reuse check). Scans WORKSPACE functions by \
                default (set include_deps to also match against deps/std). Each \
                pair reports jaccard and containment. Filters: threshold, metric \
-               (max|jaccard), name and file substrings (match either side), \
-               min_lines, min_features, limit." );
+               (max|jaccard), name substring, include/exclude path substrings \
+               (scope to or skip files/folders), min_lines, min_features, limit." );
           ( "inputSchema",
             schema
               [
@@ -470,8 +485,13 @@ let tool_defs : J.t =
                   — pass \"max\" to also surface subset/'call it instead' dupes");
                 ("name", "string",
                  "only pairs where either function name contains this substring");
-                ("file", "string",
-                 "only pairs where either file path contains this substring");
+                ("include", "string[]",
+                 "restrict to files whose path contains one of these substrings \
+                  (case-insensitive) — both sides of a pair must match, e.g. \
+                  [\"crates/foo/\"] to dedup within one crate");
+                ("exclude", "string[]",
+                 "drop any pair where either file's path contains one of these \
+                  substrings, e.g. [\"/tests/\", \"generated\"]");
                 ("min_lines", "integer",
                  "drop pairs whose smaller side has fewer code lines");
                 ("min_features", "integer",
