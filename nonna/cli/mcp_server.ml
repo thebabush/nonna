@@ -309,14 +309,28 @@ let dup_line (p : Engine.pair) : string =
     p.Engine.a.Engine.line_start p.Engine.a.Engine.line_end p.Engine.b.Engine.name
     p.Engine.b.Engine.file p.Engine.b.Engine.line_start p.Engine.b.Engine.line_end
 
+let bool_arg args k =
+  try Some (JU.member k args |> JU.to_bool) with _ -> None
+
 let find_duplicates (args : J.t) : J.t =
   if not !indexing_done then
     tool_text ~is_error:true
       (Printf.sprintf
-         "indexing still in progress (%d functions so far) — `duplicates` scans \
-          the whole index, so wait until `status` reports done."
+         "indexing still in progress (%d functions so far) — `find_duplicates` \
+          scans the index, so wait until `status` reports done."
          (Engine.size !engine))
+  else if !workspace_fns = 0 then
+    tool_text
+      (Printf.sprintf
+         "No workspace functions indexed under %s, so there is nothing to dedup."
+         !index_root)
   else
+    (* Default to WORKSPACE-internal clone pairs. The index holds the workspace
+       first, then deps/std (often hundreds of thousands of fns) — an all-pairs
+       scan over that is the dedup view nobody wants and takes minutes. The
+       outer (a) side is always the workspace prefix; include_deps only widens
+       the (b) side, so cost stays O(workspace · candidates). *)
+    let include_deps = Option.value (bool_arg args "include_deps") ~default:false in
     let flt =
       {
         Engine.threshold =
@@ -328,17 +342,23 @@ let find_duplicates (args : J.t) : J.t =
         min_lines = Option.value (int_arg args "min_lines") ~default:0;
         min_features = Option.value (int_arg args "min_features") ~default:0;
         limit = Option.value (int_arg args "limit") ~default:50;
+        scope_a = !workspace_fns;
+        scope_b = (if include_deps then 0 else !workspace_fns);
       }
     in
     let pairs = Engine.duplicates_filtered !engine flt in
+    let scope_desc =
+      if include_deps then "workspace × (workspace + deps/std)"
+      else Printf.sprintf "workspace-internal (%d fns; pass include_deps to widen)"
+             !workspace_fns
+    in
     if pairs = [] then
       tool_text
-        (Printf.sprintf
-           "No duplicate pairs above the given filters in the %d-function corpus."
-           (Engine.size !engine))
+        (Printf.sprintf "No %s duplicate pairs above the given filters." scope_desc)
     else
       tool_text
-        (Printf.sprintf "%d duplicate pair(s):\n\n%s" (List.length pairs)
+        (Printf.sprintf "%d duplicate pair(s), %s:\n\n%s" (List.length pairs)
+           scope_desc
            (String.concat "\n" (List.map dup_line pairs)))
 
 (* ── Tools ───────────────────────────────────────────────────────────────── *)
@@ -433,12 +453,13 @@ let tool_defs : J.t =
           ("name", `String "find_duplicates");
           ( "description",
             `String
-              "List structurally similar function PAIRS across the whole \
-               indexed corpus — no query function needed (the dedup / refactor \
-               view; complements find_similar's single-function reuse check). \
-               Each pair reports jaccard and containment. Filters: threshold, \
-               metric (max|jaccard), name and file substrings (match either \
-               side), min_lines, min_features, limit." );
+              "List structurally similar function PAIRS — no query function \
+               needed (the dedup / refactor view; complements find_similar's \
+               single-function reuse check). Scans WORKSPACE functions by \
+               default (set include_deps to also match against deps/std). Each \
+               pair reports jaccard and containment. Filters: threshold, metric \
+               (max|jaccard), name and file substrings (match either side), \
+               min_lines, min_features, limit." );
           ( "inputSchema",
             schema
               [
@@ -457,6 +478,9 @@ let tool_defs : J.t =
                  "drop pairs whose smaller side has fewer features");
                 ("limit", "integer",
                  "max pairs returned, jaccard desc (default 50)");
+                ("include_deps", "boolean",
+                 "also match workspace fns against deps/std (default false: \
+                  workspace-internal only)");
               ]
               [] );
         ];

@@ -73,6 +73,8 @@ type dup_filter = {
   min_lines : int; (* min code_lines on the smaller side *)
   min_features : int; (* min signature size on the smaller side *)
   limit : int; (* cap on results sorted by jaccard desc (<=0 = all) *)
+  scope_a : int; (* restrict pair's 1st side to index prefix [0,scope_a) (<=0 = all) *)
+  scope_b : int; (* restrict pair's 2nd side likewise — workspace fns index first *)
 }
 
 val default_filter : dup_filter
