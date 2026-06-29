@@ -2,6 +2,7 @@
  *
  *   nonna features <file>                      debug: per-fn feature dump
  *   nonna dupes <dir|files...> [-t 0.5]        intra-corpus clone pairs
+ *       filters: --metric max|jaccard, --name/--file SUB, --min-lines/--min-features N, -n LIMIT
  *   nonna query <corpus...> -- <draft.rs> [-t 0.25] [-k 5]
  *       reuse-before-write: for each fn in draft, top matches in corpus
  *   nonna graph <file> [--fn NAME] [-o DIR]    DOT per propagation round
@@ -29,20 +30,21 @@ let cmd_features (file : string) =
                 Printf.printf "  %016x %s\n" f.Dfg.hash
                   (Dfg.tag_name f.Dfg.tag)))
 
-let cmd_dupes (paths : string list) (threshold : float) =
+let cmd_dupes (paths : string list) (flt : Engine.dup_filter) =
   let units = Units.units_of_paths paths in
   let eng, kept = Units.index_units units in
   Printf.printf "indexed %d units (of %d; min %d features) from %d file(s)\n"
     (List.length kept) (List.length units) Units.min_features
     (List.length (Units.source_files_of_paths paths));
-  let pairs = Engine.duplicates eng ~threshold in
+  let pairs = Engine.duplicates_filtered eng flt in
   if pairs = [] then print_endline "no duplicate candidates above threshold."
   else
     pairs
-    |> List.iter (fun ((a : Engine.meta), (b : Engine.meta), j) ->
-           Printf.printf "%.3f  %s (%s:%d)  <->  %s (%s:%d)\n" j a.Engine.name
-             a.Engine.file a.Engine.line_start b.Engine.name b.Engine.file
-             b.Engine.line_start)
+    |> List.iter (fun (p : Engine.pair) ->
+           Printf.printf "j %.3f c %.3f  %s (%s:%d)  <->  %s (%s:%d)\n"
+             p.Engine.j p.Engine.c p.Engine.a.Engine.name p.Engine.a.Engine.file
+             p.Engine.a.Engine.line_start p.Engine.b.Engine.name
+             p.Engine.b.Engine.file p.Engine.b.Engine.line_start)
 
 let cmd_query (corpus : string list) (draft : string) (threshold : float)
     (top_k : int) =
@@ -171,8 +173,14 @@ let parse_flags (args : string list) : string list * (string * string) list =
     | [] -> (List.rev pos, flags)
     | ("-t" | "--threshold") :: v :: rest -> go pos (("t", v) :: flags) rest
     | ("-k" | "--top") :: v :: rest -> go pos (("k", v) :: flags) rest
+    | ("-n" | "--limit") :: v :: rest -> go pos (("n", v) :: flags) rest
     | ("-o" | "--out") :: v :: rest -> go pos (("o", v) :: flags) rest
     | ("-p" | "--port") :: v :: rest -> go pos (("p", v) :: flags) rest
+    | "--name" :: v :: rest -> go pos (("name", v) :: flags) rest
+    | "--file" :: v :: rest -> go pos (("file", v) :: flags) rest
+    | "--min-lines" :: v :: rest -> go pos (("min-lines", v) :: flags) rest
+    | "--min-features" :: v :: rest -> go pos (("min-features", v) :: flags) rest
+    | "--metric" :: v :: rest -> go pos (("metric", v) :: flags) rest
     | "--fn" :: v :: rest -> go pos (("fn", v) :: flags) rest
     | "--sample" :: v :: rest -> go pos (("sample", v) :: flags) rest
     | "--ext" :: v :: rest -> go pos (("ext", v) :: flags) rest
@@ -187,7 +195,8 @@ let usage () =
   prerr_endline
     "usage:\n\
     \  nonna features <file>\n\
-    \  nonna dupes <dir|files...> [-t 0.5]\n\
+    \  nonna dupes <dir|files...> [-t 0.5] [--metric max|jaccard] [-n LIMIT]\n\
+    \                            [--name SUB] [--file SUB] [--min-lines N] [--min-features N]\n\
     \  nonna query <corpus...> -- <draft.rs> [-t 0.25] [-k 5]\n\
     \  nonna graph <file> [--fn NAME] [-o DIR]   (DOT per propagation round)\n\
     \  nonna dump-il <file> [--fn NAME]          (compact IL CFG)\n\
@@ -260,7 +269,24 @@ let () =
   | "dupes" :: rest ->
       let pos, flags = parse_flags rest in
       if pos = [] then usage ();
-      cmd_dupes pos (flag flags "t" 0.5 float_of_string)
+      let by_max =
+        match flag flags "metric" "jaccard" (fun s -> s) with
+        | "max" -> true
+        | "jaccard" -> false
+        | _ ->
+            prerr_endline "unknown --metric (use: max | jaccard)";
+            exit 1
+      in
+      cmd_dupes pos
+        {
+          Engine.threshold = flag flags "t" 0.5 float_of_string;
+          by_max;
+          name_sub = flag flags "name" "" (fun s -> s);
+          file_sub = flag flags "file" "" (fun s -> s);
+          min_lines = flag flags "min-lines" 0 int_of_string;
+          min_features = flag flags "min-features" 0 int_of_string;
+          limit = flag flags "n" 0 int_of_string;
+        }
   | "parse-stats" :: rest ->
       let pos, flags = parse_flags rest in
       if pos = [] then usage ();

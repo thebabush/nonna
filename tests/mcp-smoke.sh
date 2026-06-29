@@ -5,6 +5,10 @@ set -u
 BIN=_build/default/nonna/cli/main.exe
 ROOT=$(pwd)/tests/fixtures
 
+# nonna only indexes a workspace opted in with a `.nonna` marker (opt-in gate).
+touch "$ROOT/.nonna"
+trap 'rm -f "$ROOT/.nonna"' EXIT
+
 OUT=$( {
   echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"smoke"}}}'
   echo '{"jsonrpc":"2.0","method":"notifications/initialized"}'
@@ -17,6 +21,8 @@ OUT=$( {
   echo "{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"tools/call\",\"params\":{\"name\":\"query_similar\",\"arguments\":{\"file\":\"$ROOT/draft.rs\",\"name\":\"avg\"}}}"
   # algebra: floor_all (subset) vs clamp_all -> B-A should be the hi-branch
   echo "{\"jsonrpc\":\"2.0\",\"id\":6,\"method\":\"tools/call\",\"params\":{\"name\":\"diff_functions\",\"arguments\":{\"a_file\":\"$ROOT/draft.rs\",\"a_name\":\"floor_all\",\"b_file\":\"$ROOT/corpus/util.rs\",\"b_name\":\"clamp_all\"}}}"
+  # whole-corpus dupe finding (no query fn), filtered by name
+  echo '{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"find_duplicates","arguments":{"threshold":0.5,"name":"clamp"}}}'
 } | "$BIN" mcp "$ROOT" 2>/dev/null )
 
 fail=0
@@ -31,12 +37,13 @@ check "query_similar finds mean"  'jaccard 1.000'
 check "diff: intersection scores" 'A ∩ B: jaccard'
 check "diff: B-A has the fix"     'B − A'
 check "diff: hi-branch unique"    'hi'
+check "find_duplicates lists pairs" 'duplicate pair'
 
 # ── HTTP transport (nonna serve) ─────────────────────────────────────────────
 PORT=18976
 "$BIN" serve "$ROOT" -p $PORT 2>/dev/null &
 SRV=$!
-trap 'kill $SRV 2>/dev/null' EXIT
+trap 'kill $SRV 2>/dev/null; rm -f "$ROOT/.nonna"' EXIT
 sleep 3
 HOUT=$(curl -s -X POST "http://127.0.0.1:$PORT/mcp" -H 'Content-Type: application/json' \
   -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{}}}')
