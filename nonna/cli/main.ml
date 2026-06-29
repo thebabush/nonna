@@ -286,6 +286,8 @@ let () =
           min_lines = flag flags "min-lines" 0 int_of_string;
           min_features = flag flags "min-features" 0 int_of_string;
           limit = flag flags "n" 0 int_of_string;
+          scope_a = 0;
+          scope_b = 0;
         }
   | "parse-stats" :: rest ->
       let pos, flags = parse_flags rest in

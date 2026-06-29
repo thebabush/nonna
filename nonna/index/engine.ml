@@ -170,6 +170,8 @@ type dup_filter = {
   min_lines : int;
   min_features : int;
   limit : int;
+  scope_a : int;
+  scope_b : int;
 }
 
 let default_filter =
@@ -181,16 +183,24 @@ let default_filter =
     min_lines = 0;
     min_features = 0;
     limit = 0;
+    scope_a = 0;
+    scope_b = 0;
   }
 
 let duplicates_filtered (t : t) (flt : dup_filter) : pair list =
   let seen = Hashtbl.create 256 in
   let out = ref [] in
-  for fid = 0 to size t - 1 do
+  (* Bound each side of a pair to an index prefix (<=0 = whole corpus). The
+     index lays out workspace functions first, then deps/std, so a [scope_a]
+     of the workspace count restricts the (expensive) outer loop to "my code"
+     — the difference between O(workspace) and O(workspace+deps+std). *)
+  let bound n = if n > 0 then min n (size t) else size t in
+  let amax = bound flt.scope_a and bmax = bound flt.scope_b in
+  for fid = 0 to amax - 1 do
     let sg, meta = t.sigs.(fid) in
     candidates t sg
     |> List.iter (fun cand ->
-           if cand <> fid then (
+           if cand <> fid && cand < bmax then (
              let key = (min fid cand, max fid cand) in
              if not (Hashtbl.mem seen key) then (
                Hashtbl.replace seen key ();
