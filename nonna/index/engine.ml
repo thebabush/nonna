@@ -166,7 +166,8 @@ type dup_filter = {
   threshold : float;
   by_max : bool;
   name_sub : string;
-  file_sub : string;
+  include_paths : string list;
+  exclude_paths : string list;
   min_lines : int;
   min_features : int;
   limit : int;
@@ -179,13 +180,23 @@ let default_filter =
     threshold = 0.5;
     by_max = true;
     name_sub = "";
-    file_sub = "";
+    include_paths = [];
+    exclude_paths = [];
     min_lines = 0;
     min_features = 0;
     limit = 0;
     scope_a = 0;
     scope_b = 0;
   }
+
+(* A file passes the path scope if it matches some include (or there are none)
+   and matches no exclude — substrings, case-insensitive. A pair is kept only
+   when BOTH its files pass, so "include crates/foo/" means both sides live
+   there and "exclude /tests/" drops any pair touching a test file. *)
+let path_ok (flt : dup_filter) (file : string) : bool =
+  (flt.include_paths = []
+  || List.exists (fun sub -> contains_ci ~sub file) flt.include_paths)
+  && not (List.exists (fun sub -> contains_ci ~sub file) flt.exclude_paths)
 
 let duplicates_filtered (t : t) (flt : dup_filter) : pair list =
   let seen = Hashtbl.create 256 in
@@ -220,8 +231,7 @@ let duplicates_filtered (t : t) (flt : dup_filter) : pair list =
                    && min af bf >= flt.min_features
                    && (contains_ci ~sub:flt.name_sub meta.name
                       || contains_ci ~sub:flt.name_sub cmeta.name)
-                   && (contains_ci ~sub:flt.file_sub meta.file
-                      || contains_ci ~sub:flt.file_sub cmeta.file)
+                   && path_ok flt meta.file && path_ok flt cmeta.file
                  then
                    out :=
                      { a = meta; b = cmeta; a_features = af; b_features = bf; j; c }

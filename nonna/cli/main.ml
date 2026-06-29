@@ -2,7 +2,8 @@
  *
  *   nonna features <file>                      debug: per-fn feature dump
  *   nonna dupes <dir|files...> [-t 0.5]        intra-corpus clone pairs
- *       filters: --metric max|jaccard, --name/--file SUB, --min-lines/--min-features N, -n LIMIT
+ *       filters: --metric max|jaccard, --name SUB, --include/--exclude SUB,SUB,
+ *                --min-lines/--min-features N, -n LIMIT
  *   nonna query <corpus...> -- <draft.rs> [-t 0.25] [-k 5]
  *       reuse-before-write: for each fn in draft, top matches in corpus
  *   nonna graph <file> [--fn NAME] [-o DIR]    DOT per propagation round
@@ -177,7 +178,8 @@ let parse_flags (args : string list) : string list * (string * string) list =
     | ("-o" | "--out") :: v :: rest -> go pos (("o", v) :: flags) rest
     | ("-p" | "--port") :: v :: rest -> go pos (("p", v) :: flags) rest
     | "--name" :: v :: rest -> go pos (("name", v) :: flags) rest
-    | "--file" :: v :: rest -> go pos (("file", v) :: flags) rest
+    | "--include" :: v :: rest -> go pos (("include", v) :: flags) rest
+    | "--exclude" :: v :: rest -> go pos (("exclude", v) :: flags) rest
     | "--min-lines" :: v :: rest -> go pos (("min-lines", v) :: flags) rest
     | "--min-features" :: v :: rest -> go pos (("min-features", v) :: flags) rest
     | "--metric" :: v :: rest -> go pos (("metric", v) :: flags) rest
@@ -191,12 +193,17 @@ let parse_flags (args : string list) : string list * (string * string) list =
 let flag flags k default conv =
   match List.assoc_opt k flags with Some v -> conv v | None -> default
 
+(* comma-separated list value, empty entries dropped (for --include/--exclude) *)
+let split_csv (s : string) : string list =
+  String.split_on_char ',' s |> List.filter (fun x -> x <> "")
+
 let usage () =
   prerr_endline
     "usage:\n\
     \  nonna features <file>\n\
     \  nonna dupes <dir|files...> [-t 0.5] [--metric max|jaccard] [-n LIMIT]\n\
-    \                            [--name SUB] [--file SUB] [--min-lines N] [--min-features N]\n\
+    \                            [--name SUB] [--include SUB,..] [--exclude SUB,..]\n\
+    \                            [--min-lines N] [--min-features N]\n\
     \  nonna query <corpus...> -- <draft.rs> [-t 0.25] [-k 5]\n\
     \  nonna graph <file> [--fn NAME] [-o DIR]   (DOT per propagation round)\n\
     \  nonna dump-il <file> [--fn NAME]          (compact IL CFG)\n\
@@ -282,7 +289,8 @@ let () =
           Engine.threshold = flag flags "t" 0.5 float_of_string;
           by_max;
           name_sub = flag flags "name" "" (fun s -> s);
-          file_sub = flag flags "file" "" (fun s -> s);
+          include_paths = flag flags "include" [] split_csv;
+          exclude_paths = flag flags "exclude" [] split_csv;
           min_lines = flag flags "min-lines" 0 int_of_string;
           min_features = flag flags "min-features" 0 int_of_string;
           limit = flag flags "n" 0 int_of_string;
