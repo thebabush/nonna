@@ -117,19 +117,74 @@ let candidates (t : t) (sg : Signature.t) : int list =
     by_df;
   Hashtbl.fold (fun fid () acc -> fid :: acc) seen []
 
+(* Case-insensitive substring test (empty needle matches everything). *)
+let contains_ci ~(sub : string) (s : string) : bool =
+  sub = ""
+  ||
+  let s = String.lowercase_ascii s and sub = String.lowercase_ascii sub in
+  let ls = String.length s and lsub = String.length sub in
+  let rec at i = i + lsub <= ls && (String.sub s i lsub = sub || at (i + 1)) in
+  at 0
+
+(* A file passes when it matches some include (or there are none) and no
+   exclude — substrings, case-insensitive. Shared by the dedup pair filter
+   and the single-query match filter. *)
+let path_match ~(include_paths : string list) ~(exclude_paths : string list)
+    (file : string) : bool =
+  (include_paths = []
+  || List.exists (fun sub -> contains_ci ~sub file) include_paths)
+  && not (List.exists (fun sub -> contains_ci ~sub file) exclude_paths)
+
+(* Post-scan gates for the single-query ranking (find_similar / query_similar),
+   mirroring [dup_filter] for the whole-corpus path. All cheap, all AND-ed and
+   applied to each candidate MATCH: [q_by_max] picks the gated score (max(j,c)
+   vs jaccard); [q_name_sub] matches the match's name (""=off); the paths gate
+   its file; [q_min_lines]/[q_min_features] gate the match's own size; [q_scope]
+   <=0 ranks the whole corpus, >0 restricts matches to the index prefix
+   [0,q_scope) (workspace fns index first, so the workspace count = "my code"). *)
+type query_filter = {
+  q_by_max : bool;
+  q_name_sub : string;
+  q_include_paths : string list;
+  q_exclude_paths : string list;
+  q_min_lines : int;
+  q_min_features : int;
+  q_scope : int;
+}
+
+let query_pass_all =
+  {
+    q_by_max = true;
+    q_name_sub = "";
+    q_include_paths = [];
+    q_exclude_paths = [];
+    q_min_lines = 0;
+    q_min_features = 0;
+    q_scope = 0;
+  }
+
 (* Query with an externally-extracted signature. `exclude` skips a fid
-   (used to avoid matching a function against itself). *)
-let query ?(exclude = -1) (t : t) (qsig : Signature.t) ~(threshold : float)
-    ~(max_results : int) : hit list =
+   (used to avoid matching a function against itself); `filter` gates the
+   matches (defaults to pass-all, preserving the bare-ranking behaviour). *)
+let query ?(exclude = -1) ?(filter = query_pass_all) (t : t)
+    (qsig : Signature.t) ~(threshold : float) ~(max_results : int) : hit list =
+  let smax = if filter.q_scope > 0 then min filter.q_scope (size t) else size t in
   candidates t qsig
   |> List.filter_map (fun fid ->
-         if fid = exclude then None
+         if fid = exclude || fid >= smax then None
          else
            let sg, meta = t.sigs.(fid) in
            let j = Signature.jaccard qsig sg in
            let c = Signature.containment ~query:qsig sg in
-           if Float.max j c >= threshold then
-             Some { meta; jaccard = j; containment = c }
+           let score = if filter.q_by_max then Float.max j c else j in
+           if
+             score >= threshold
+             && meta.code_lines >= filter.q_min_lines
+             && Signature.size sg >= filter.q_min_features
+             && contains_ci ~sub:filter.q_name_sub meta.name
+             && path_match ~include_paths:filter.q_include_paths
+                  ~exclude_paths:filter.q_exclude_paths meta.file
+           then Some { meta; jaccard = j; containment = c }
            else None)
   |> List.sort (fun a b ->
          compare
@@ -148,20 +203,12 @@ type pair = {
   c : float;
 }
 
-(* Case-insensitive substring test (empty needle matches everything). *)
-let contains_ci ~(sub : string) (s : string) : bool =
-  sub = ""
-  ||
-  let s = String.lowercase_ascii s and sub = String.lowercase_ascii sub in
-  let ls = String.length s and lsub = String.length sub in
-  let rec at i = i + lsub <= ls && (String.sub s i lsub = sub || at (i + 1)) in
-  at 0
-
 (* Post-scan filters for whole-corpus dupe finding ("nonna dupes" / the MCP
    find_duplicates tool / the explorer feed). All cheap, all AND-ed:
-   [name_sub]/[file_sub] match EITHER side (""=off); [min_lines]/[min_features]
-   gate the SMALLER side; [limit]<=0 = unbounded. [by_max] picks the score the
-   threshold gates on — max(j,c) (the "call it instead" signal) or jaccard. *)
+   [name_sub] matches EITHER side (""=off); [include_paths]/[exclude_paths] gate
+   each file (see [path_ok]); [min_lines]/[min_features] gate the SMALLER side;
+   [limit]<=0 = unbounded. [by_max] picks the score the threshold gates on —
+   max(j,c) (the "call it instead" signal) or jaccard. *)
 type dup_filter = {
   threshold : float;
   by_max : bool;
@@ -194,9 +241,8 @@ let default_filter =
    when BOTH its files pass, so "include crates/foo/" means both sides live
    there and "exclude /tests/" drops any pair touching a test file. *)
 let path_ok (flt : dup_filter) (file : string) : bool =
-  (flt.include_paths = []
-  || List.exists (fun sub -> contains_ci ~sub file) flt.include_paths)
-  && not (List.exists (fun sub -> contains_ci ~sub file) flt.exclude_paths)
+  path_match ~include_paths:flt.include_paths ~exclude_paths:flt.exclude_paths
+    file
 
 let duplicates_filtered (t : t) (flt : dup_filter) : pair list =
   let seen = Hashtbl.create 256 in

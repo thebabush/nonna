@@ -120,6 +120,9 @@ let str_list_arg args k : string list =
 let float_arg args k =
   try Some (JU.member k args |> JU.to_number) with _ -> None
 
+let bool_arg args k =
+  try Some (JU.member k args |> JU.to_bool) with _ -> None
+
 let ext_of_language = function
   | "python" -> ".py"
   | "javascript" -> ".js"
@@ -204,13 +207,13 @@ let hit_block (h : Engine.hit) : string =
     h.Engine.jaccard h.Engine.containment
     (String.concat "\n" body)
 
-let query_unit (u : Units.unit_info) ~(threshold : float) ~(top_k : int) :
-    Engine.hit list =
+let query_unit (u : Units.unit_info) ~(threshold : float) ~(top_k : int)
+    ~(filter : Engine.query_filter) : Engine.hit list =
   let sg = Signature.extract ~lang:u.Units.ulang u.Units.ucfg in
   if Signature.size sg < Units.min_features then []
   else
     let self_m = Units.meta_of u in
-    Engine.query !engine sg ~threshold ~max_results:(top_k + 1)
+    Engine.query !engine sg ~threshold ~max_results:(top_k + 1) ~filter
     |> List.filter (fun (h : Engine.hit) ->
            not (Engine.nests self_m h.Engine.meta))
     |> List.filteri (fun i _ -> i < top_k)
@@ -310,6 +313,26 @@ let diff_functions (args : J.t) : J.t =
       in
       tool_text text
 
+(* Build the single-query match filter from tool args, mirroring the dedup
+   knobs. [with_name] is false for query_similar, where `name` already selects
+   the function to query and so can't double as a result filter. Unlike
+   find_duplicates, the score gate defaults to max(j,c) and matches against
+   deps/std by default (a single query is cheap; the workspace-only scope is
+   opt-in via include_deps:false). *)
+let query_filter_of_args ?(with_name = true) (args : J.t) : Engine.query_filter =
+  let include_deps = Option.value (bool_arg args "include_deps") ~default:true in
+  {
+    Engine.q_by_max =
+      (match str_arg args "metric" with Some "jaccard" -> false | _ -> true);
+    q_name_sub =
+      (if with_name then Option.value (str_arg args "name") ~default:"" else "");
+    q_include_paths = str_list_arg args "include";
+    q_exclude_paths = str_list_arg args "exclude";
+    q_min_lines = Option.value (int_arg args "min_lines") ~default:0;
+    q_min_features = Option.value (int_arg args "min_features") ~default:0;
+    q_scope = (if include_deps then 0 else !workspace_fns);
+  }
+
 (* ── find_duplicates: whole-corpus clone pairs (no query function) ───────── *)
 
 let dup_line (p : Engine.pair) : string =
@@ -317,9 +340,6 @@ let dup_line (p : Engine.pair) : string =
     p.Engine.c p.Engine.a.Engine.name p.Engine.a.Engine.file
     p.Engine.a.Engine.line_start p.Engine.a.Engine.line_end p.Engine.b.Engine.name
     p.Engine.b.Engine.file p.Engine.b.Engine.line_start p.Engine.b.Engine.line_end
-
-let bool_arg args k =
-  try Some (JU.member k args |> JU.to_bool) with _ -> None
 
 let find_duplicates (args : J.t) : J.t =
   if not !indexing_done then
@@ -426,7 +446,23 @@ let tool_defs : J.t =
                 ("language", "string",
                  "rust|python|javascript|typescript|go|java|c|cpp (default rust)");
                 ("top_k", "integer", "max results (default 5)");
-                ("threshold", "number", "min max(jaccard,containment) (default 0.25)");
+                ("threshold", "number",
+                 "min similarity on the gated metric (default 0.25)");
+                ("metric", "string",
+                 "gate on max(jaccard,containment) (default) or jaccard — pass \
+                  \"jaccard\" to require the same shape, not just a subset");
+                ("name", "string",
+                 "only matches whose function name contains this substring");
+                ("include", "string[]",
+                 "restrict matches to files whose path contains one of these \
+                  substrings (case-insensitive), e.g. [\"crates/foo/\"]");
+                ("exclude", "string[]",
+                 "drop matches whose file path contains one of these substrings, \
+                  e.g. [\"/tests/\", \"vendor\"]");
+                ("min_lines", "integer", "drop matches with fewer code lines");
+                ("min_features", "integer", "drop matches with fewer features");
+                ("include_deps", "boolean",
+                 "rank against deps/std too (default true; false = workspace only)");
               ]
               [ "code" ] );
         ];
@@ -445,7 +481,21 @@ let tool_defs : J.t =
                  ("name", "string", "the function's name (alternative to line)");
                  ("top_k", "integer", "max results (default 5)");
                  ("threshold", "number",
-                  "min max(jaccard,containment) (default 0.25)");
+                  "min similarity on the gated metric (default 0.25)");
+                 ("metric", "string",
+                  "gate on max(jaccard,containment) (default) or jaccard — pass \
+                   \"jaccard\" to require the same shape, not just a subset");
+                 ("include", "string[]",
+                  "restrict matches to files whose path contains one of these \
+                   substrings (case-insensitive), e.g. [\"crates/foo/\"]");
+                 ("exclude", "string[]",
+                  "drop matches whose file path contains one of these substrings, \
+                   e.g. [\"/tests/\", \"vendor\"]");
+                 ("min_lines", "integer", "drop matches with fewer code lines");
+                 ("min_features", "integer", "drop matches with fewer features");
+                 ("include_deps", "boolean",
+                  "rank against deps/std too (default true; false = workspace \
+                   only)");
                ])
               [ "file" ] );
         ];
@@ -547,6 +597,7 @@ let call_tool (name : string) (args : J.t) : J.t =
           let threshold =
             Option.value (float_arg args "threshold") ~default:0.25
           in
+          let filter = query_filter_of_args args in
           match units_of_code code lang with
           | _, [] ->
               tool_text ~is_error:true
@@ -557,7 +608,7 @@ let call_tool (name : string) (args : J.t) : J.t =
               |> List.map (fun (u : Units.unit_info) ->
                      hits_text
                        ("drafted `" ^ u.Units.uname ^ "`")
-                       (query_unit u ~threshold ~top_k))
+                       (query_unit u ~threshold ~top_k ~filter))
               |> String.concat "\n\n---\n\n" |> tool_text))
   | "query_similar" -> (
       match str_arg args "file" with
@@ -580,11 +631,12 @@ let call_tool (name : string) (args : J.t) : J.t =
               let threshold =
                 Option.value (float_arg args "threshold") ~default:0.25
               in
+              let filter = query_filter_of_args ~with_name:false args in
               tool_text
                 (hits_text
                    (Printf.sprintf "`%s` (%s:%d)" u.Units.uname file
                       u.Units.uline_start)
-                   (query_unit u ~threshold ~top_k))))
+                   (query_unit u ~threshold ~top_k ~filter))))
   | "diff_functions" -> diff_functions args
   | "find_duplicates" -> find_duplicates args
   | _ -> tool_text ~is_error:true ("unknown tool: " ^ name)

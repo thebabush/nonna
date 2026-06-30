@@ -47,8 +47,25 @@ val freeze : builder -> t
 val size : t -> int
 val get_meta : t -> int -> meta
 
+(* Post-scan gates for the single-query ranking (find_similar / query_similar),
+   mirroring [dup_filter]. Applied to each candidate match: [q_by_max] gates the
+   threshold on max(j,c) (default) vs jaccard; [q_name_sub] / the path lists gate
+   the match's name and file; [q_min_lines]/[q_min_features] gate the match's own
+   size; [q_scope]>0 restricts matches to the index prefix [0,q_scope) (workspace
+   fns index first → "my code only"), <=0 = whole corpus. *)
+type query_filter = {
+  q_by_max : bool;
+  q_name_sub : string;
+  q_include_paths : string list;
+  q_exclude_paths : string list;
+  q_min_lines : int;
+  q_min_features : int;
+  q_scope : int;
+}
+
 val query :
   ?exclude:int ->
+  ?filter:query_filter ->
   t ->
   Nonna_features.Signature.t ->
   threshold:float ->
