@@ -753,23 +753,6 @@ let http_response (oc : out_channel) ?(status = "200 OK")
     status content_type (String.length body) body;
   flush oc
 
-let percent_decode (s : string) : string =
-  let b = Buffer.create (String.length s) in
-  let n = String.length s in
-  let rec go i =
-    if i < n then
-      if s.[i] = '%' && i + 2 < n then (
-        (match int_of_string_opt ("0x" ^ String.sub s (i + 1) 2) with
-        | Some c -> Buffer.add_char b (Char.chr c)
-        | None -> Buffer.add_char b s.[i]);
-        go (i + 3))
-      else (
-        Buffer.add_char b (if s.[i] = '+' then ' ' else s.[i]);
-        go (i + 1))
-  in
-  go 0;
-  Buffer.contents b
-
 (* "/api/fn?file=..&start=1" -> ("/api/fn", [("file", ".."); ("start", "1")]) *)
 let split_path_query (target : string) : string * (string * string) list =
   match String.index_opt target '?' with
@@ -785,7 +768,7 @@ let split_path_query (target : string) : string * (string * string) list =
                | Some e ->
                    Some
                      ( String.sub kv 0 e,
-                       percent_decode
+                       Wire.percent_decode ~plus_as_space:true
                          (String.sub kv (e + 1) (String.length kv - e - 1)) ))
       in
       (path, params)
@@ -822,20 +805,7 @@ let handle_http_conn (fd : Unix.file_descr) : unit =
   let oc = Unix.out_channel_of_descr fd in
   (try
      let request_line = input_line ic in
-     let rec read_headers len =
-       match String.trim (input_line ic) with
-       | "" -> len
-       | h -> (
-           match String.index_opt h ':' with
-           | Some i
-             when String.lowercase_ascii (String.sub h 0 i) = "content-length"
-             ->
-               read_headers
-                 (int_of_string
-                    (String.trim (String.sub h (i + 1) (String.length h - i - 1))))
-           | _ -> read_headers len)
-     in
-     let clen = read_headers 0 in
+     let clen = Wire.read_content_length ic in
      if
        String.length request_line >= 4
        && String.uppercase_ascii (String.sub request_line 0 4) = "POST"

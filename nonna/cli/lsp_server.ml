@@ -18,21 +18,7 @@ let report_threshold = 0.7
 (* ── Wire protocol ───────────────────────────────────────────────────────── *)
 
 let read_message () : J.t option =
-  let rec read_headers (len : int) =
-    match input_line stdin with
-    | "" | "\r" -> len
-    | line -> (
-        match String.index_opt line ':' with
-        | Some i
-          when String.lowercase_ascii (String.sub line 0 i) = "content-length"
-          ->
-            read_headers
-              (int_of_string
-                 (String.trim
-                    (String.sub line (i + 1) (String.length line - i - 1))))
-        | _ -> read_headers len)
-  in
-  match read_headers 0 with
+  match Wire.read_content_length stdin with
   | 0 -> None
   | n -> Some (J.from_string (really_input_string stdin n))
   | exception End_of_file -> None
@@ -62,30 +48,13 @@ let log_to_client (msg : string) : unit =
 
 (* ── URIs ────────────────────────────────────────────────────────────────── *)
 
-let percent_decode (s : string) : string =
-  let b = Buffer.create (String.length s) in
-  let n = String.length s in
-  let rec go i =
-    if i < n then
-      if s.[i] = '%' && i + 2 < n then (
-        (match int_of_string_opt ("0x" ^ String.sub s (i + 1) 2) with
-        | Some c -> Buffer.add_char b (Char.chr c)
-        | None -> Buffer.add_char b s.[i]);
-        go (i + 3))
-      else (
-        Buffer.add_char b s.[i];
-        go (i + 1))
-  in
-  go 0;
-  Buffer.contents b
-
 let path_of_uri (uri : string) : string =
   let p =
     if String.length uri >= 7 && String.sub uri 0 7 = "file://" then
       String.sub uri 7 (String.length uri - 7)
     else uri
   in
-  percent_decode p
+  Wire.percent_decode p
 
 (* ── Analysis ────────────────────────────────────────────────────────────── *)
 
