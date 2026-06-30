@@ -61,10 +61,62 @@ let code_lines_of_body (body : G.stmt) : int =
          | None -> ());
   Hashtbl.length lines
 
+(* ── OCaml IL normalization (D-ocaml) ─────────────────────────────────────
+   opengrep parses OCaml but its AST_to_IL leaves function bodies un-lowered:
+   expression-bodied functions and bare expression-statements (sequence
+   elements, if/match branches) are wrapped in an OS_ExprStmt2 "other stmt"
+   that AST_to_IL has no case for, so the whole body collapses to a single
+   NTodo and the function carries ZERO dataflow features. We fix it here, on
+   the generic AST nonna already owns, rather than patching the vendored
+   submodule:
+
+   - rewrite [OtherStmt (OS_ExprStmt2, [E e])] -> [ExprStmt e]; AST_to_IL
+     lowers ExprStmt, and funcbody_to_stmt turns an FBStmt-wrapped ExprStmt
+     into exactly what an FBExpr body would produce, so this one rewrite
+     covers both the body wrapper and the nested statement cases.
+   - mark each body's tail expression as an implicit return, so the returned
+     value becomes a Control node (what opengrep's Implicit_return pass does
+     for the languages on its allowlist — OCaml is not on it). Measured to
+     matter: without it, hard-negative (same-file) FPR ~doubles. *)
+let rec mark_tail_return (st : G.stmt) : unit =
+  match st.G.s with
+  | G.ExprStmt (e, _) -> e.G.is_implicit_return <- true
+  | G.Block (_, stmts, _) -> (
+      match List.rev stmts with last :: _ -> mark_tail_return last | [] -> ())
+  | G.If (_, _, th, el) ->
+      mark_tail_return th;
+      Option.iter mark_tail_return el
+  | G.Switch (_, _, cases) ->
+      List.iter
+        (function
+          | G.CasesAndBody (_, s) -> mark_tail_return s | G.CaseEllipsis _ -> ())
+        cases
+  | _ -> ()
+
+let normalize_ocaml (ast : G.program) : G.program =
+  let v =
+    object
+      inherit [_] G.map_legacy as super
+
+      method! visit_stmt env st =
+        match st.G.s with
+        | G.OtherStmt (G.OS_ExprStmt2, [ G.E e ]) ->
+            G.exprstmt (super#visit_expr env e)
+        | _ -> super#visit_stmt env st
+
+      method! visit_function_definition env fdef =
+        let fdef = super#visit_function_definition env fdef in
+        mark_tail_return (AST_generic_helpers.funcbody_to_stmt fdef.G.fbody);
+        fdef
+    end
+  in
+  List.map (fun st -> v#visit_stmt () st) ast
+
 let units_of_file (file : string) : unit_info list =
   let path = Fpath.v file in
   let ast = Parse_target.parse_program path in
   let lang = Lang.lang_of_filename_exn path in
+  let ast = if lang = Lang.Ocaml then normalize_ocaml ast else ast in
   Naming_AST.resolve lang ast;
   (* Mark trailing expressions as returning, so expression-bodied fns (the
      Rust default) get NReturn nodes in the IL. AST_to_IL only consumes the
@@ -125,7 +177,8 @@ let units_of_file (file : string) : unit_info list =
    shared IL — these are the ones exercised by the sanity dataset. *)
 let indexable_exts =
   [ ".rs"; ".py"; ".js"; ".ts"; ".go"; ".java"; ".c"; ".h";
-    ".cc"; ".cpp"; ".cxx"; ".cppm"; ".hpp"; ".hh"; ".hxx" ]
+    ".cc"; ".cpp"; ".cxx"; ".cppm"; ".hpp"; ".hh"; ".hxx";
+    ".ml"; ".mli" ]
 
 (* build outputs / dependency caches, never source corpus *)
 let skip_dirs = [ "target"; "_build"; "node_modules"; "dist"; "__pycache__" ]

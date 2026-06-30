@@ -196,6 +196,17 @@ let base_cfg_for (lang : Lang.t) : cfg =
      Chrome net/ corpus (2026-06-15, n=62): +exp_nodes lifted spearman 0.859->0.879
      (0.890 with depth-2 iters). call_names measured flat (0.859) — left off. *)
   | Lang.Cpp -> { b with string_values = true; field_names = true; exp_nodes = true }
+  (* OCaml lands on the C config, NOT the Rust/Python one: record/module field
+     access (Dot offsets) and format/label strings are API identity, while
+     exp_nodes — decomposed expression graphs that win for Rust/Python/Cpp —
+     HURT here. Tuned via LLM-judge correlation on a 5-lib corpus (base,
+     containers, dune, re, yojson; 2026-06-30, n=37 sonnet-judged pairs):
+     spearman(jaccard, overall) 0.873 (base) -> 0.884 (+string/field);
+     +exp_nodes measured 0.844, iters-2 neutral. Corroborated on 732 mined
+     pairs: samefile FPR halved (0.027 -> 0.014), positive recall unchanged.
+     (OCaml IL itself required fixing opengrep's AST_to_IL — without it every
+     OCaml body collapsed to NTodo; see vendor/opengrep patches.) *)
+  | Lang.Ocaml -> { b with string_values = true; field_names = true }
   (* exp-nodes sweeps (2026-06): decomposed expression graphs at depth 2
      win the evolved kind on Rust (MRR 0.723->0.766, r@5 0.812->0.859) AND
      Python (0.929->0.950, r@5 0.964->0.986), everything else flat — an

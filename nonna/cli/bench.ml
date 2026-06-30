@@ -66,10 +66,23 @@ let cpp_keywords =
       "static_cast"; "dynamic_cast"; "reinterpret_cast"; "const_cast";
     ]
 
+let ocaml_keywords =
+  [
+    "and"; "as"; "assert"; "begin"; "class"; "constraint"; "do"; "done";
+    "downto"; "else"; "end"; "exception"; "external"; "false"; "for"; "fun";
+    "function"; "functor"; "if"; "in"; "include"; "inherit"; "initializer";
+    "lazy"; "let"; "match"; "method"; "module"; "mutable"; "new"; "nonrec";
+    "object"; "of"; "open"; "or"; "private"; "rec"; "sig"; "struct"; "then";
+    "to"; "true"; "try"; "type"; "val"; "virtual"; "when"; "while"; "with";
+    (* keyword-like staples: unit, the option/result ctors, list nil *)
+    "unit"; "Some"; "None"; "Ok"; "Error"; "ref"; "ignore";
+  ]
+
 let rust_kw_tbl = kw_tbl_of rust_keywords
 let python_kw_tbl = kw_tbl_of python_keywords
 let c_kw_tbl = kw_tbl_of c_keywords
 let cpp_kw_tbl = kw_tbl_of cpp_keywords
+let ocaml_kw_tbl = kw_tbl_of ocaml_keywords
 
 (* ground-truth normalization must speak the file's language *)
 let kw_tbl_for (file : string) =
@@ -77,6 +90,7 @@ let kw_tbl_for (file : string) =
   | ".py" -> python_kw_tbl
   | ".c" | ".h" -> c_kw_tbl
   | ".cc" | ".cpp" | ".cxx" | ".cppm" | ".hpp" | ".hh" | ".hxx" -> cpp_kw_tbl
+  | ".ml" | ".mli" -> ocaml_kw_tbl
   | _ -> rust_kw_tbl
 
 let is_ident (s : string) =

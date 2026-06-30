@@ -131,6 +131,7 @@ let ext_of_language = function
   | "java" -> ".java"
   | "c" -> ".c"
   | "cpp" | "c++" | "cxx" | "cc" -> ".cc"
+  | "ocaml" | "ml" -> ".ml"
   | _ -> ".rs"
 
 (* Drafted code is parsed via a temp file (deleted afterwards); its text is
@@ -420,7 +421,7 @@ let side_props p what =
   [
     (p ^ "_code", "string", what ^ " as a code string (instead of a file)");
     (p ^ "_language", "string",
-     "language of " ^ p ^ "_code: rust|python|javascript|typescript|go|java|c|cpp (default rust)");
+     "language of " ^ p ^ "_code: rust|python|javascript|typescript|go|java|c|cpp|ocaml (default rust)");
     (p ^ "_file", "string", "absolute path containing " ^ what);
     (p ^ "_line", "integer", "a line inside the function (1-based)");
     (p ^ "_name", "string", "the function's name (alternative to line)");
@@ -444,7 +445,7 @@ let tool_defs : J.t =
               [
                 ("code", "string", "the drafted function source code");
                 ("language", "string",
-                 "rust|python|javascript|typescript|go|java|c|cpp (default rust)");
+                 "rust|python|javascript|typescript|go|java|c|cpp|ocaml (default rust)");
                 ("top_k", "integer", "max results (default 5)");
                 ("threshold", "number",
                  "min similarity on the gated metric (default 0.25)");
