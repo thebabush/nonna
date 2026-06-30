@@ -72,7 +72,9 @@ let iters_for (lang : Lang.t option) : int =
          Tuned via LLM-judge correlation on a Chrome (net/) corpus, 2026-06-15
          (n=62 sonnet-judged pairs): spearman(jaccard, judge overall)
          0.859 (depth0/no-exp) -> 0.879 (+exp) -> 0.890 (+exp, depth2). *)
-      | Some (Lang.Rust | Lang.Python | Lang.Python2 | Lang.Python3 | Lang.Cpp) ->
+      | Some
+          ( Lang.Rust | Lang.Python | Lang.Python2 | Lang.Python3 | Lang.Cpp
+          | Lang.Ocaml ) ->
           2 (* exp-node features specialize per round *)
       | _ -> 1)
 
@@ -196,17 +198,19 @@ let base_cfg_for (lang : Lang.t) : cfg =
      Chrome net/ corpus (2026-06-15, n=62): +exp_nodes lifted spearman 0.859->0.879
      (0.890 with depth-2 iters). call_names measured flat (0.859) — left off. *)
   | Lang.Cpp -> { b with string_values = true; field_names = true; exp_nodes = true }
-  (* OCaml lands on the C config, NOT the Rust/Python one: record/module field
-     access (Dot offsets) and format/label strings are API identity, while
-     exp_nodes — decomposed expression graphs that win for Rust/Python/Cpp —
-     HURT here. Tuned via LLM-judge correlation on a 5-lib corpus (base,
-     containers, dune, re, yojson; 2026-06-30, n=37 sonnet-judged pairs):
-     spearman(jaccard, overall) 0.873 (base) -> 0.884 (+string/field);
-     +exp_nodes measured 0.844, iters-2 neutral. Corroborated on 732 mined
-     pairs: samefile FPR halved (0.027 -> 0.014), positive recall unchanged.
-     (OCaml IL itself required fixing opengrep's AST_to_IL — without it every
-     OCaml body collapsed to NTodo; see vendor/opengrep patches.) *)
-  | Lang.Ocaml -> { b with string_values = true; field_names = true }
+  (* OCaml takes the Rust config (exp_nodes, depth 2 — see iters_for): it is the
+     same ML-family expression/match-oriented shape, and decomposed expression
+     graphs are what separate OCaml's ubiquitous variant-dispatch twins (big
+     `match`-mapper functions that collapse to near-identical blobs without it).
+     Re-tuned via LLM-judge correlation on a nonna + deps corpus (nonna,
+     vendor/opengrep, opam libs; 2026-06-30, n=93 sonnet-judged pairs):
+     spearman(jaccard, overall) 0.592 (base) -> 0.787 (+exp) -> 0.846 (+exp,
+     depth 2). string/field and per-tag weight tweaks were flat-to-negative on
+     top of exp. (An earlier n=37 single-lib pass had picked the C config; the
+     larger judge corrected it — exp wins decisively at scale.)
+     (OCaml IL itself is recovered by units.ml's normalize_ocaml AST pre-pass;
+     without it every OCaml body collapses to NTodo.) *)
+  | Lang.Ocaml -> { b with exp_nodes = true }
   (* exp-nodes sweeps (2026-06): decomposed expression graphs at depth 2
      win the evolved kind on Rust (MRR 0.723->0.766, r@5 0.812->0.859) AND
      Python (0.929->0.950, r@5 0.964->0.986), everything else flat — an

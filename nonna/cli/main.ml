@@ -233,6 +233,17 @@ let rec strip_profile acc = function
   | "--iters" :: v :: rest ->
       Dfg.iterations_override := Some (int_of_string v);
       strip_profile acc rest
+  | "--weights" :: v :: rest ->
+      (* per-DFG-tag weight overrides for tuning sweeps, e.g.
+         --weights construct=1.3,control=1.2 (tag names per Dfg.tag_name) *)
+      String.split_on_char ',' v
+      |> List.iter (fun kv ->
+             match String.split_on_char '=' kv with
+             | [ name; w ] -> Signature.set_weight name (float_of_string w)
+             | _ ->
+                 prerr_endline ("bad --weights entry: " ^ kv);
+                 exit 1);
+      strip_profile acc rest
   | "--with" :: v :: rest ->
       (* fold channels into the BASE hashes (ablation studies) *)
       String.split_on_char ',' v
