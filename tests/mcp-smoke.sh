@@ -23,6 +23,8 @@ OUT=$( {
   echo "{\"jsonrpc\":\"2.0\",\"id\":6,\"method\":\"tools/call\",\"params\":{\"name\":\"diff_functions\",\"arguments\":{\"a_file\":\"$ROOT/draft.rs\",\"a_name\":\"floor_all\",\"b_file\":\"$ROOT/corpus/util.rs\",\"b_name\":\"clamp_all\"}}}"
   # whole-corpus dupe finding (no query fn), filtered by name
   echo '{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"find_duplicates","arguments":{"threshold":0.5,"name":"clamp"}}}'
+  # find_similar filters (same dup knobs): min_lines gates the mean match away
+  echo '{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"find_similar","arguments":{"code":"fn my_avg(qs: &[f64]) -> f64 { let mut k = 0usize; let mut s = 0.0; for q in qs { s += q; k += 1; } if k == 0 { 0.0 } else { s / k as f64 } }","language":"rust","min_lines":9999}}}'
 } | "$BIN" mcp "$ROOT" 2>/dev/null )
 
 fail=0
@@ -38,6 +40,7 @@ check "diff: intersection scores" 'A ∩ B: jaccard'
 check "diff: B-A has the fix"     'B − A'
 check "diff: hi-branch unique"    'hi'
 check "find_duplicates lists pairs" 'duplicate pair'
+check "find_similar min_lines gates" 'No similar function found for drafted `my_avg`'
 
 # ── HTTP transport (nonna serve) ─────────────────────────────────────────────
 PORT=18976
