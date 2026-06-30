@@ -91,6 +91,14 @@ let rec mark_tail_return (st : G.stmt) : unit =
         (function
           | G.CasesAndBody (_, s) -> mark_tail_return s | G.CaseEllipsis _ -> ())
         cases
+  | G.Try (_, body, catches, else_opt, _finally) ->
+      (* the value is the body's tail (no exception) or a handler's tail (caught);
+         an else block, when present, is the no-exception value. finally runs but
+         its value is discarded. *)
+      mark_tail_return body;
+      List.iter (fun (_, _, h) -> mark_tail_return h) catches;
+      Option.iter (fun (_, s) -> mark_tail_return s) else_opt
+  (* While/For/etc. are unit-valued in OCaml — no tail value to mark. *)
   | _ -> ()
 
 let normalize_ocaml (ast : G.program) : G.program =
