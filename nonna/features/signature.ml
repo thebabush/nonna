@@ -10,13 +10,24 @@ type t = {
 
 (* Per-source weights (v1 defaults: dfg 1.0, call surface 0.8, consts 0.5,
    structural 0.3). DFG features are weighted per tag. *)
-let dfg_weight (tag : Dfg.tag) : float =
+let default_dfg_weight (tag : Dfg.tag) : float =
   match tag with
   | Dfg.BinOp | Dfg.UnOp | Dfg.Call | Dfg.Field | Dfg.Index | Dfg.Construct
   | Dfg.Control ->
       1.0
   | Dfg.ConstString | Dfg.ConstOther -> 0.8
   | Dfg.MacroBag -> 0.8
+
+(* Runtime per-tag weight overrides (--weights, for tuning sweeps), keyed by
+   Dfg.tag_name. Empty = the defaults above. *)
+let weight_overrides : (string, float) Hashtbl.t = Hashtbl.create 8
+let set_weight (name : string) (w : float) : unit =
+  Hashtbl.replace weight_overrides name w
+
+let dfg_weight (tag : Dfg.tag) : float =
+  match Hashtbl.find_opt weight_overrides (Dfg.tag_name tag) with
+  | Some w -> w
+  | None -> default_dfg_weight tag
 
 let misc_weight = 0.8
 let structural_weight = 0.3
