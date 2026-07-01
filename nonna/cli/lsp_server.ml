@@ -15,6 +15,13 @@ module Signature = Nonna_features.Signature
 (* report matches with max(jaccard, containment) above this *)
 let report_threshold = 0.7
 
+(* Diagnostics are advisory editor squiggles, so only flag structurally rich
+   functions. Trivial getters carry ~9 features and near-dupe each other at
+   1.00 (pure noise); real functions start ~15. This floor is deliberately
+   higher than the index-wide Units.min_features (5), which still governs the
+   CLI/MCP power-user paths — it gates BOTH the queried unit and its matches. *)
+let diag_min_features = 15
+
 (* ── Wire protocol ───────────────────────────────────────────────────────── *)
 
 let read_message () : J.t option =
@@ -54,11 +61,29 @@ let path_of_uri (uri : string) : string =
       String.sub uri 7 (String.length uri - 7)
     else uri
   in
-  Wire.percent_decode p
+  let p = Wire.percent_decode p in
+  (* The index stores realpath-canonical paths (symlinks resolved — see
+     Units.source_files_of_paths), so canonicalize queries the same way.
+     Otherwise a workspace opened through a symlink makes every function match
+     its own un-resolved copy (self-flag). realpath needs the file to exist;
+     fall back to the raw path if it doesn't. *)
+  try Unix.realpath p with _ -> p
 
 (* ── Analysis ────────────────────────────────────────────────────────────── *)
 
 let engine : Engine.t ref = ref Engine.empty
+
+(* Serializes every engine swap: the background full-index thread, the
+   per-file refresh on save, and a manual reindex can all race otherwise. *)
+let engine_mutex = Mutex.create ()
+
+(* Remembered so a manual `nonna/reindex` can rebuild from scratch. *)
+let workspace_root : string option ref = ref None
+
+let set_engine (eng : Engine.t) : unit =
+  Mutex.lock engine_mutex;
+  engine := eng;
+  Mutex.unlock engine_mutex
 
 (* Indexing runs on a background thread: the protocol loop must stay
    responsive (shutdown/didOpen) — a synchronous index of a big workspace
@@ -76,12 +101,28 @@ let index_workspace_async (root : string) : unit =
                   if Signature.size sg >= Units.min_features then
                     ignore (Engine.add b (Units.meta_of u) sg));
            let eng = Engine.freeze b in
-           engine := eng;
+           set_engine eng;
            log_to_client
              (Printf.sprintf "indexed %d units under %s" (Engine.size eng)
                 root)
          with e -> log_to_client ("indexing failed: " ^ Printexc.to_string e))
        ())
+
+(* On save, swap the file's stale units for its current ones so a saved
+   function no longer matches its own drifted copy and diagnostics track disk. *)
+let refresh_file_in_index (path : string) : unit =
+  try
+    let fresh =
+      Units.units_of_file path
+      |> List.filter_map (fun (u : Units.unit_info) ->
+             let sg = Signature.extract ~lang:u.Units.ulang u.Units.ucfg in
+             if Signature.size sg < Units.min_features then None
+             else Some (Units.meta_of u, sg))
+    in
+    Mutex.lock engine_mutex;
+    engine := Engine.refresh_file !engine ~file:path fresh;
+    Mutex.unlock engine_mutex
+  with e -> log_to_client ("refresh failed: " ^ Printexc.to_string e)
 
 let line_range (line0 : int) : J.t =
   `Assoc
@@ -94,10 +135,20 @@ let diagnostics_for (path : string) : J.t list =
   Units.units_of_file path
   |> List.filter_map (fun (u : Units.unit_info) ->
          let sg = Signature.extract ~lang:u.Units.ulang u.Units.ucfg in
-         if Signature.size sg < Units.min_features then None
+         if Signature.size sg < diag_min_features then None
          else
            let self_m = Units.meta_of u in
            Engine.query !engine sg ~threshold:report_threshold ~max_results:5
+             ~filter:
+               {
+                 Engine.q_by_max = true;
+                 q_name_sub = "";
+                 q_include_paths = [];
+                 q_exclude_paths = [];
+                 q_min_lines = 0;
+                 q_min_features = diag_min_features;
+                 q_scope = 0;
+               }
            |> List.filter (fun (h : Engine.hit) ->
                   not (Engine.nests self_m h.Engine.meta))
            |> function
@@ -241,15 +292,33 @@ let handle (msg : J.t) : unit =
       in
       (match root with
       | Some r ->
+          workspace_root := Some r;
           log_to_client ("indexing " ^ r ^ " (background)...");
           index_workspace_async r
       | None -> log_to_client "no workspace root; index empty")
   | "initialized" -> ()
-  | "textDocument/didOpen" | "textDocument/didSave" -> (
+  | "textDocument/didOpen" -> (
       try
         publish
           (JU.member "textDocument" params |> JU.member "uri" |> JU.to_string)
       with e -> log_to_client (Printexc.to_string e))
+  | "textDocument/didSave" -> (
+      (* refresh the file's index entries first, so it's re-diffed against its
+         current self, then publish diagnostics from the updated index *)
+      try
+        let uri =
+          JU.member "textDocument" params |> JU.member "uri" |> JU.to_string
+        in
+        refresh_file_in_index (path_of_uri uri);
+        publish uri
+      with e -> log_to_client (Printexc.to_string e))
+  | "nonna/reindex" -> (
+      match !workspace_root with
+      | Some r ->
+          log_to_client ("reindexing " ^ r ^ " (background)...");
+          index_workspace_async r;
+          reply id (`Assoc [ ("status", `String "reindexing") ])
+      | None -> reply id (`Assoc [ ("status", `String "no workspace root") ]))
   | "nonna/findSimilar" | "nonna/functionText" -> (
       try
         let uri =

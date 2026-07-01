@@ -44,6 +44,12 @@ val freeze : builder -> t
 (** Snapshot copy: the builder may keep growing afterwards; the snapshot
     never changes. Safe to share across threads. *)
 
+val refresh_file :
+  t -> file:string -> (meta * Nonna_features.Signature.t) list -> t
+(** A new snapshot with every unit from [file] dropped and the given current
+    units appended. Rebuilds the inverted index (O(indexed units)); used by the
+    LSP on save so a saved function stops matching its own drifted copy. *)
+
 val size : t -> int
 val get_meta : t -> int -> meta
 

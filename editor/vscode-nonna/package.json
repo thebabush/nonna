@@ -19,6 +19,10 @@
       {
         "command": "nonna.findSimilar",
         "title": "nonna: Find Similar Functions"
+      },
+      {
+        "command": "nonna.reindex",
+        "title": "nonna: Reindex Workspace"
       }
     ],
     "configuration": {
