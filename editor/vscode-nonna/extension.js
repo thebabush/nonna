@@ -127,6 +127,21 @@ function activate(context) {
     })
   );
 
+  // rebuild the whole index from disk (the index is otherwise refreshed only
+  // per-file on save, so this picks up new/deleted files and external edits)
+  context.subscriptions.push(
+    commands.registerCommand('nonna.reindex', async () => {
+      try {
+        const res = await client.sendRequest('nonna/reindex', {});
+        window.showInformationMessage(
+          `nonna: ${(res && res.status) || 'reindexing'}`
+        );
+      } catch (e) {
+        window.showErrorMessage(`nonna: ${e.message || e}`);
+      }
+    })
+  );
+
   context.subscriptions.push(
     commands.registerCommand('nonna.findSimilar', async () => {
       const editor = window.activeTextEditor;

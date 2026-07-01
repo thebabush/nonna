@@ -84,6 +84,19 @@ let freeze (b : builder) : t =
 
 let empty : t = { postings = Hashtbl.create 1; sigs = [||] }
 
+(* Rebuild a snapshot with every unit from [file] dropped and the file's
+   current units ([fresh]) appended. The LSP calls this on save so a saved
+   function stops matching its own now-stale copy — line drift breaks the
+   positional self-check in [nests] — and diagnostics reflect the code on disk.
+   Rebuilds the whole inverted index (O(indexed units)); fine for interactive,
+   one-file-at-a-time saves. *)
+let refresh_file (t : t) ~(file : string) (fresh : (meta * Signature.t) list) : t
+    =
+  let b = create () in
+  Array.iter (fun (sg, m) -> if m.file <> file then ignore (add b m sg)) t.sigs;
+  List.iter (fun (m, sg) -> ignore (add b m sg)) fresh;
+  freeze b
+
 let size (t : t) = Array.length t.sigs
 
 let get_meta (t : t) (fid : int) : meta =
