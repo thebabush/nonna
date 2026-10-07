@@ -61,11 +61,8 @@ let cmd_query (corpus : string list) (draft : string) (threshold : float)
          else
            let hits =
              let self_m = Units.meta_of u in
-             Engine.query eng sg ~threshold ~max_results:top_k
-             (* the draft may itself be inside the corpus (drop self) or be
-                a nested def queried against its container (tautological) *)
-             |> List.filter (fun (h : Engine.hit) ->
-                    not (Engine.nests self_m h.Engine.meta))
+             Engine.query eng sg ~threshold ~max_results:top_k ~accept:(fun m ->
+                 not (Engine.nests self_m m))
            in
            if hits = [] then print_endline "  no similar function found."
            else

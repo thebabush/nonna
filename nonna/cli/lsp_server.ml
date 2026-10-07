@@ -4,7 +4,7 @@
  * didOpen/didSave the file's fn-units are queried against that index and
  * strong matches are published as Information diagnostics on the unit's
  * first line ("similar to `mean` (util.rs:1) — jaccard 0.95 ...").
- * The index is NOT updated on edits (stale-but-useful); restart to refresh.
+ * Open buffers are indexed on change; diagnostics carry document versions.
  *)
 
 module J = Yojson.Safe
@@ -21,6 +21,12 @@ let report_threshold = 0.7
    higher than the index-wide Units.min_features (5), which still governs the
    CLI/MCP power-user paths — it gates BOTH the queried unit and its matches. *)
 let diag_min_features = 15
+
+(* [diag_min_features] counts every channel, and a one-line closure
+   (`|&t| key(&xs[t]) == k`) clears 15 on the non-dfg channels alone — then
+   near-dupes every other one-liner at 1.00. Real code has a few lines of it,
+   so gate BOTH sides on code lines as well. *)
+let diag_min_lines = 3
 
 (* ── Wire protocol ───────────────────────────────────────────────────────── *)
 
@@ -46,8 +52,9 @@ let reply (id : J.t) (result : J.t) : unit =
 let notify (meth : string) (params : J.t) : unit =
   send
     (`Assoc
-      [ ("jsonrpc", `String "2.0"); ("method", `String meth);
-        ("params", params) ])
+       [
+         ("jsonrpc", `String "2.0"); ("method", `String meth); ("params", params);
+       ])
 
 let log_to_client (msg : string) : unit =
   notify "window/logMessage"
@@ -73,56 +80,81 @@ let path_of_uri (uri : string) : string =
 
 let engine : Engine.t ref = ref Engine.empty
 
-(* Serializes every engine swap: the background full-index thread, the
-   per-file refresh on save, and a manual reindex can all race otherwise. *)
-let engine_mutex = Mutex.create ()
+(* Serialize state transitions and publication, including background commits.
+   A completed scan replays changes received since it began. *)
+let state_mutex = Mutex.create ()
 
-(* Remembered so a manual `nonna/reindex` can rebuild from scratch. *)
+let with_state f =
+  Mutex.lock state_mutex;
+  Fun.protect ~finally:(fun () -> Mutex.unlock state_mutex) f
+
 let workspace_root : string option ref = ref None
+let generation = ref 0
 
-let set_engine (eng : Engine.t) : unit =
-  Mutex.lock engine_mutex;
-  engine := eng;
-  Mutex.unlock engine_mutex
+type document = { version : int; text : string; units : Units.unit_info list }
 
-(* Indexing runs on a background thread: the protocol loop must stay
-   responsive (shutdown/didOpen) — a synchronous index of a big workspace
-   made client stops time out. The engine ref is swapped atomically at the
-   end; queries before that see an empty index (no diagnostics yet). *)
-let index_workspace_async (root : string) : unit =
+let open_docs : (string, document) Hashtbl.t = Hashtbl.create 16
+
+let changes : (string, (Engine.meta * Signature.t) list) Hashtbl.t =
+  Hashtbl.create 16
+
+let republish_open : (unit -> unit) ref = ref (fun () -> ())
+
+let entries units =
+  List.filter_map
+    (fun (u : Units.unit_info) ->
+      let sg = Signature.extract ~lang:u.ulang u.ucfg in
+      if Signature.size sg < Units.min_features then None
+      else Some (Units.meta_of u, sg))
+    units
+
+let disk_units path = try Units.units_of_file path with _ -> []
+
+let document_units uri =
+  match Hashtbl.find_opt open_docs uri with
+  | Some doc -> doc.units
+  | None -> disk_units (path_of_uri uri)
+
+let replace_file path units =
+  let fresh = entries units in
+  Hashtbl.replace changes path fresh;
+  engine := Engine.refresh_file !engine ~file:path fresh
+
+let index_workspace_async root =
+  incr generation;
+  let ticket = !generation in
+  Hashtbl.clear changes;
   ignore
     (Thread.create
        (fun () ->
          try
            let b = Engine.create () in
            Units.units_of_paths [ root ]
-           |> List.iter (fun (u : Units.unit_info) ->
-                  let sg = Signature.extract ~lang:u.Units.ulang u.Units.ucfg in
-                  if Signature.size sg >= Units.min_features then
-                    ignore (Engine.add b (Units.meta_of u) sg));
-           let eng = Engine.freeze b in
-           set_engine eng;
-           log_to_client
-             (Printf.sprintf "indexed %d units under %s" (Engine.size eng)
-                root)
+           |> entries
+           |> List.iter (fun (m, sg) -> ignore (Engine.add b m sg));
+           let snapshot = Engine.freeze b in
+           with_state (fun () ->
+               if ticket = !generation then (
+                 let snapshot =
+                   Hashtbl.fold
+                     (fun file fresh eng -> Engine.refresh_file eng ~file fresh)
+                     changes snapshot
+                 in
+                 let snapshot =
+                   Hashtbl.fold
+                     (fun uri doc eng ->
+                       Engine.refresh_file eng ~file:(path_of_uri uri)
+                         (entries doc.units))
+                     open_docs snapshot
+                 in
+                 engine := snapshot;
+                 Hashtbl.clear changes;
+                 log_to_client
+                   (Printf.sprintf "indexed %d units under %s"
+                      (Engine.size snapshot) root);
+                 !republish_open ()))
          with e -> log_to_client ("indexing failed: " ^ Printexc.to_string e))
        ())
-
-(* On save, swap the file's stale units for its current ones so a saved
-   function no longer matches its own drifted copy and diagnostics track disk. *)
-let refresh_file_in_index (path : string) : unit =
-  try
-    let fresh =
-      Units.units_of_file path
-      |> List.filter_map (fun (u : Units.unit_info) ->
-             let sg = Signature.extract ~lang:u.Units.ulang u.Units.ucfg in
-             if Signature.size sg < Units.min_features then None
-             else Some (Units.meta_of u, sg))
-    in
-    Mutex.lock engine_mutex;
-    engine := Engine.refresh_file !engine ~file:path fresh;
-    Mutex.unlock engine_mutex
-  with e -> log_to_client ("refresh failed: " ^ Printexc.to_string e)
 
 let line_range (line0 : int) : J.t =
   `Assoc
@@ -131,26 +163,28 @@ let line_range (line0 : int) : J.t =
       ("end", `Assoc [ ("line", `Int line0); ("character", `Int 999) ]);
     ]
 
-let diagnostics_for (path : string) : J.t list =
-  Units.units_of_file path
+let diagnostics_for (uri : string) : J.t list =
+  document_units uri
   |> List.filter_map (fun (u : Units.unit_info) ->
          let sg = Signature.extract ~lang:u.Units.ulang u.Units.ucfg in
-         if Signature.size sg < diag_min_features then None
+         if
+           Signature.size sg < diag_min_features
+           || u.Units.ucode_lines < diag_min_lines
+         then None
          else
            let self_m = Units.meta_of u in
            Engine.query !engine sg ~threshold:report_threshold ~max_results:5
+             ~accept:(fun m -> not (Engine.nests self_m m))
              ~filter:
                {
                  Engine.q_by_max = true;
                  q_name_sub = "";
                  q_include_paths = [];
                  q_exclude_paths = [];
-                 q_min_lines = 0;
+                 q_min_lines = diag_min_lines;
                  q_min_features = diag_min_features;
                  q_scope = 0;
                }
-           |> List.filter (fun (h : Engine.hit) ->
-                  not (Engine.nests self_m h.Engine.meta))
            |> function
            | [] -> None
            | best :: _ as hits ->
@@ -163,8 +197,8 @@ let diagnostics_for (path : string) : J.t list =
                in
                let message =
                  Printf.sprintf
-                   "%s is similar to `%s` (%s:%d) — jaccard %.2f, \
-                    containment %.2f%s"
+                   "%s is similar to `%s` (%s:%d) — jaccard %.2f, containment \
+                    %.2f%s"
                    u.Units.uname m.Engine.name
                    (Filename.basename m.Engine.file)
                    m.Engine.line_start best.Engine.jaccard
@@ -183,8 +217,8 @@ let diagnostics_for (path : string) : J.t list =
                                 [
                                   ("uri", `String ("file://" ^ hm.Engine.file));
                                   ( "range",
-                                    line_range (max 0 (hm.Engine.line_start - 1))
-                                  );
+                                    line_range
+                                      (max 0 (hm.Engine.line_start - 1)) );
                                 ] );
                             ( "message",
                               `String
@@ -196,26 +230,57 @@ let diagnostics_for (path : string) : J.t list =
                in
                Some
                  (`Assoc
-                   [
-                     ("range", line_range line);
-                     ("severity", `Int 3) (* Information *);
-                     ("source", `String "nonna");
-                     ("message", `String message);
-                     ("relatedInformation", `List related);
-                   ]))
+                    [
+                      ("range", line_range line);
+                      ("severity", `Int 3) (* Information *);
+                      ("source", `String "nonna");
+                      ("message", `String message);
+                      ("relatedInformation", `List related);
+                    ]))
 
-let publish (uri : string) : unit =
-  let diags = try diagnostics_for (path_of_uri uri) with _ -> [] in
-  notify "textDocument/publishDiagnostics"
-    (`Assoc [ ("uri", `String uri); ("diagnostics", `List diags) ])
+let publish_diags ?version uri diags =
+  let fields = [ ("uri", `String uri); ("diagnostics", `List diags) ] in
+  let fields =
+    match version with
+    | None -> fields
+    | Some v -> ("version", `Int v) :: fields
+  in
+  notify "textDocument/publishDiagnostics" (`Assoc fields)
+
+let publish uri =
+  match Hashtbl.find_opt open_docs uri with
+  | None -> ()
+  | Some doc ->
+      publish_diags ~version:doc.version uri
+        (try diagnostics_for uri with _ -> [])
+
+let () =
+  republish_open := fun () -> Hashtbl.iter (fun uri _ -> publish uri) open_docs
+
+let update_document uri version text =
+  match Hashtbl.find_opt open_docs uri with
+  | Some doc when version <= doc.version -> ()
+  | _ ->
+      let path = path_of_uri uri in
+      let units = try Units.units_of_text ~path text with _ -> [] in
+      Hashtbl.replace open_docs uri { version; text; units };
+      replace_file path units;
+      !republish_open ()
 
 (* Source text of the fn-unit at a position (for the virtual diff docs). *)
 let function_text (uri : string) (line0 : int) : J.t =
   let path = path_of_uri uri in
-  match Units.unit_at path (line0 + 1) with
+  match Units.unit_at_in (document_units uri) (line0 + 1) with
   | None -> `Assoc [ ("name", `Null); ("text", `String "") ]
   | Some u ->
-      let lines = Units.file_slice path u.Units.uline_start u.Units.uline_end in
+      let lines =
+        match Hashtbl.find_opt open_docs uri with
+        | None -> Units.file_slice path u.Units.uline_start u.Units.uline_end
+        | Some doc ->
+            String.split_on_char '\n' doc.text
+            |> List.filteri (fun i _ ->
+                   i + 1 >= u.uline_start && i + 1 <= u.uline_end)
+      in
       `Assoc
         [
           ("name", `String u.Units.uname);
@@ -226,16 +291,14 @@ let function_text (uri : string) (line0 : int) : J.t =
    narrowest named fn-unit containing it and return ranked matches. Lower
    threshold than diagnostics — this is an explicit request, show more. *)
 let find_similar (uri : string) (line0 : int) : J.t =
-  let path = path_of_uri uri in
-  match Units.unit_at path (line0 + 1) with
+  match Units.unit_at_in (document_units uri) (line0 + 1) with
   | None -> `Assoc [ ("query", `Null); ("hits", `List []) ]
   | Some u ->
       let sg = Signature.extract ~lang:u.Units.ulang u.Units.ucfg in
       let hits =
         let self_m = Units.meta_of u in
-        Engine.query !engine sg ~threshold:0.2 ~max_results:15
-        |> List.filter (fun (h : Engine.hit) ->
-               not (Engine.nests self_m h.Engine.meta))
+        Engine.query !engine sg ~threshold:0.2 ~max_results:15 ~accept:(fun m ->
+            not (Engine.nests self_m m))
         |> List.map (fun (h : Engine.hit) ->
                let m = h.Engine.meta in
                `Assoc
@@ -262,7 +325,7 @@ let server_capabilities : J.t =
               `Assoc
                 [
                   ("openClose", `Bool true);
-                  ("change", `Int 0);
+                  ("change", `Int 1);
                   ("save", `Bool true);
                 ] );
           ] );
@@ -271,13 +334,11 @@ let server_capabilities : J.t =
     ]
 
 let handle (msg : J.t) : unit =
-  let meth =
-    try JU.member "method" msg |> JU.to_string with _ -> ""
-  in
+  let meth = try JU.member "method" msg |> JU.to_string with _ -> "" in
   let id = JU.member "id" msg in
   let params = JU.member "params" msg in
   match meth with
-  | "initialize" ->
+  | "initialize" -> (
       reply id server_capabilities;
       let root =
         match JU.member "rootUri" params with
@@ -286,32 +347,47 @@ let handle (msg : J.t) : unit =
             try
               Some
                 (path_of_uri
-                   (JU.member "workspaceFolders" params |> JU.index 0
-                  |> JU.member "uri" |> JU.to_string))
+                   (JU.member "workspaceFolders" params
+                   |> JU.index 0 |> JU.member "uri" |> JU.to_string))
             with _ -> None)
       in
-      (match root with
+      match root with
       | Some r ->
           workspace_root := Some r;
           log_to_client ("indexing " ^ r ^ " (background)...");
           index_workspace_async r
       | None -> log_to_client "no workspace root; index empty")
   | "initialized" -> ()
-  | "textDocument/didOpen" -> (
-      try
-        publish
-          (JU.member "textDocument" params |> JU.member "uri" |> JU.to_string)
-      with e -> log_to_client (Printexc.to_string e))
-  | "textDocument/didSave" -> (
-      (* refresh the file's index entries first, so it's re-diffed against its
-         current self, then publish diagnostics from the updated index *)
-      try
-        let uri =
-          JU.member "textDocument" params |> JU.member "uri" |> JU.to_string
-        in
-        refresh_file_in_index (path_of_uri uri);
-        publish uri
-      with e -> log_to_client (Printexc.to_string e))
+  | "textDocument/didOpen" ->
+      let td = JU.member "textDocument" params in
+      update_document
+        (JU.member "uri" td |> JU.to_string)
+        (JU.member "version" td |> JU.to_int)
+        (JU.member "text" td |> JU.to_string)
+  | "textDocument/didChange" -> (
+      let td = JU.member "textDocument" params in
+      let uri = JU.member "uri" td |> JU.to_string in
+      let version = JU.member "version" td |> JU.to_int in
+      (* Full synchronization: each change is a complete replacement. *)
+      match JU.member "contentChanges" params |> JU.to_list |> List.rev with
+      | change :: _ when Hashtbl.mem open_docs uri ->
+          update_document uri version (JU.member "text" change |> JU.to_string)
+      | _ -> ())
+  | "textDocument/didClose" ->
+      let uri =
+        JU.member "textDocument" params |> JU.member "uri" |> JU.to_string
+      in
+      Hashtbl.remove open_docs uri;
+      let path = path_of_uri uri in
+      replace_file path (disk_units path);
+      publish_diags uri [];
+      !republish_open ()
+  | "textDocument/didSave" ->
+      let uri =
+        JU.member "textDocument" params |> JU.member "uri" |> JU.to_string
+      in
+      replace_file (path_of_uri uri) (document_units uri);
+      !republish_open ()
   | "nonna/reindex" -> (
       match !workspace_root with
       | Some r ->
@@ -333,16 +409,16 @@ let handle (msg : J.t) : unit =
       with e ->
         send
           (`Assoc
-            [
-              ("jsonrpc", `String "2.0");
-              ("id", id);
-              ( "error",
-                `Assoc
-                  [
-                    ("code", `Int (-32603));
-                    ("message", `String (Printexc.to_string e));
-                  ] );
-            ]))
+             [
+               ("jsonrpc", `String "2.0");
+               ("id", id);
+               ( "error",
+                 `Assoc
+                   [
+                     ("code", `Int (-32603));
+                     ("message", `String (Printexc.to_string e));
+                   ] );
+             ]))
   | "shutdown" -> reply id `Null
   | "exit" -> exit 0
   | _ ->
@@ -350,25 +426,24 @@ let handle (msg : J.t) : unit =
       if id <> `Null then
         send
           (`Assoc
-            [
-              ("jsonrpc", `String "2.0");
-              ("id", id);
-              ( "error",
-                `Assoc
-                  [
-                    ("code", `Int (-32601));
-                    ("message", `String ("unhandled: " ^ meth));
-                  ] );
-            ])
+             [
+               ("jsonrpc", `String "2.0");
+               ("id", id);
+               ( "error",
+                 `Assoc
+                   [
+                     ("code", `Int (-32601));
+                     ("message", `String ("unhandled: " ^ meth));
+                   ] );
+             ])
 
 let run () : unit =
   let rec loop () =
     match read_message () with
     | None -> ()
     | Some msg ->
-        (try handle msg
-         with e ->
-           prerr_endline ("nonna lsp: " ^ Printexc.to_string e));
+        (try with_state (fun () -> handle msg)
+         with e -> prerr_endline ("nonna lsp: " ^ Printexc.to_string e));
         loop ()
   in
   loop ()

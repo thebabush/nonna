@@ -12,11 +12,11 @@ function activate(context) {
   };
   const clientOptions = {
     documentSelector: [
-      { language: 'rust' },
-      { language: 'python' },
-      { language: 'javascript' },
-      { language: 'typescript' },
-      { language: 'go' },
+      { scheme: 'file', language: 'rust' },
+      { scheme: 'file', language: 'python' },
+      { scheme: 'file', language: 'javascript' },
+      { scheme: 'file', language: 'typescript' },
+      { scheme: 'file', language: 'go' },
     ],
   };
   client = new LanguageClient('nonna', 'nonna', serverOptions, clientOptions);

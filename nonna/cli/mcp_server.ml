@@ -71,37 +71,98 @@ let dep_fns = ref 0
 let marker_name = ".nonna"
 let enabled = ref false
 
-let index_async (root : string) : unit =
+(* Tool dispatch, refreshes and explorer reads share one state boundary. *)
+let dispatch_mutex = Mutex.create ()
+
+let with_dispatch f =
+  Mutex.lock dispatch_mutex;
+  Fun.protect ~finally:(fun () -> Mutex.unlock dispatch_mutex) f
+
+let dependencies : Corpus.dep list ref = ref []
+let indexed_stamp : (string * string option) list ref = ref []
+
+(* Content digests also catch same-size edits with unchanged mtimes. Include
+   manifests so dependency additions/removals trigger rediscovery. *)
+let workspace_stamp root deps =
+  let roots =
+    root
+    :: List.filter_map
+         (fun (d : Corpus.dep) ->
+           if d.source = None then Some d.src_dir else None)
+         deps
+  in
+  let files =
+    Units.source_files_of_paths roots
+    @ List.concat_map
+        (fun dir ->
+          List.map (Filename.concat dir) [ "Cargo.toml"; "Cargo.lock" ])
+        roots
+  in
+  List.sort_uniq String.compare files
+  |> List.map (fun file ->
+         ( file,
+           try Some (Digest.to_hex (Digest.file file))
+           with Sys_error _ -> None ))
+
+let build_snapshot root deps =
+  let stamp = workspace_stamp root deps in
+  let workspace = Corpus.index_dir root in
+  let files = Hashtbl.create 256 in
+  List.iter
+    (fun (e : Sigdb.entry) -> Hashtbl.replace files e.meta.file ())
+    workspace;
+  let b = Engine.create () in
+  let add (e : Sigdb.entry) = ignore (Engine.add b e.meta e.sg) in
+  List.iter add workspace;
+  List.iter
+    (fun dep ->
+      let entries =
+        Corpus.entries_of_dep dep
+        |> List.filter (fun (e : Sigdb.entry) ->
+               not (Hashtbl.mem files e.meta.file))
+      in
+      List.iter add entries;
+      List.iter
+        (fun (e : Sigdb.entry) -> Hashtbl.replace files e.meta.file ())
+        entries)
+    deps;
+  (Engine.freeze b, List.length workspace, stamp)
+
+let install_snapshot deps (snapshot, count, stamp) =
+  engine := snapshot;
+  dependencies := deps;
+  workspace_fns := count;
+  dep_count := List.length deps;
+  dep_fns := Engine.size snapshot - count;
+  indexed_stamp := stamp;
+  Explorer.cached_pairs := None
+
+let refresh_workspace () =
+  if
+    !enabled && !indexing_done
+    && workspace_stamp !index_root !dependencies <> !indexed_stamp
+  then
+    let deps = Corpus.dependencies !index_root in
+    install_snapshot deps (build_snapshot !index_root deps)
+
+let index_async root =
+  let root = try Unix.realpath root with _ -> root in
   index_root := root;
   enabled := Sys.file_exists (Filename.concat root marker_name);
   if not !enabled then indexing_done := true
   else
-  ignore
-    (Thread.create
-       (fun () ->
-         (try
-            (* the BUILDER never escapes this thread; query paths only ever
-               see frozen snapshots (the type system enforces it) *)
-            let b = Engine.create () in
-            Units.units_of_paths [ root ]
-            |> List.iter (fun (u : Units.unit_info) ->
-                   let sg =
-                     Signature.extract ~lang:u.Units.ulang u.Units.ucfg
-                   in
-                   if Signature.size sg >= Units.min_features then
-                     ignore (Engine.add b (Units.meta_of u) sg));
-            workspace_fns := Engine.built b;
-            (* expose the workspace early; deps stream in behind it *)
-            engine := Engine.freeze b;
-            (* D3: transitive cargo deps + std, from cached sigdbs *)
-            let nd, nf = Corpus.add_deps b root in
-            dep_count := nd;
-            dep_fns := nf;
-            engine := Engine.freeze b
-          with e ->
-            prerr_endline ("nonna mcp: indexing failed: " ^ Printexc.to_string e));
-         indexing_done := true)
-       ())
+    ignore
+      (Thread.create
+         (fun () ->
+           (try
+              let deps = Corpus.dependencies root in
+              let snapshot = build_snapshot root deps in
+              with_dispatch (fun () -> install_snapshot deps snapshot)
+            with e ->
+              prerr_endline
+                ("nonna mcp: indexing failed: " ^ Printexc.to_string e));
+           with_dispatch (fun () -> indexing_done := true))
+         ())
 
 (* ── Argument plumbing ───────────────────────────────────────────────────── *)
 
@@ -214,10 +275,8 @@ let query_unit (u : Units.unit_info) ~(threshold : float) ~(top_k : int)
   if Signature.size sg < Units.min_features then []
   else
     let self_m = Units.meta_of u in
-    Engine.query !engine sg ~threshold ~max_results:(top_k + 1) ~filter
-    |> List.filter (fun (h : Engine.hit) ->
-           not (Engine.nests self_m h.Engine.meta))
-    |> List.filteri (fun i _ -> i < top_k)
+    Engine.query !engine sg ~threshold ~max_results:top_k ~filter
+      ~accept:(fun m -> not (Engine.nests self_m m))
 
 let hits_text (label : string) (hits : Engine.hit list) : string =
   if hits = [] then
@@ -677,9 +736,6 @@ let error_msg (id : J.t) (code : int) (msg : string) : J.t =
       ("error", `Assoc [ ("code", `Int code); ("message", `String msg) ]);
     ]
 
-(* Tool calls may parse files; serialize dispatch across transports. *)
-let dispatch_mutex = Mutex.create ()
-
 let handle_message (msg : J.t) : J.t option =
   let meth = try JU.member "method" msg |> JU.to_string with _ -> "" in
   let id = JU.member "id" msg in
@@ -693,27 +749,30 @@ let handle_message (msg : J.t) : J.t option =
       Some
         (result_msg id
            (`Assoc
-             [
-               ("protocolVersion", `String proto);
-               ("capabilities", `Assoc [ ("tools", `Assoc []) ]);
-               ( "serverInfo",
-                 `Assoc
-                   [ ("name", `String "nonna"); ("version", `String "0.1") ]
-               );
-               ("instructions", `String instructions);
-             ]))
+              [
+                ("protocolVersion", `String proto);
+                ("capabilities", `Assoc [ ("tools", `Assoc []) ]);
+                ( "serverInfo",
+                  `Assoc
+                    [ ("name", `String "nonna"); ("version", `String "0.1") ] );
+                ("instructions", `String instructions);
+              ]))
   | "notifications/initialized" -> None
   | "ping" -> Some (result_msg id (`Assoc []))
   | "tools/list" -> Some (result_msg id (`Assoc [ ("tools", tool_defs) ]))
   | "tools/call" ->
       let name = try JU.member "name" params |> JU.to_string with _ -> "" in
       let args = JU.member "arguments" params in
-      Mutex.lock dispatch_mutex;
       let r =
-        try call_tool name args
-        with e -> tool_text ~is_error:true (Printexc.to_string e)
+        with_dispatch (fun () ->
+            Fun.protect
+              ~finally:(fun () -> Hashtbl.clear code_cache)
+              (fun () ->
+                try
+                  refresh_workspace ();
+                  call_tool name args
+                with e -> tool_text ~is_error:true (Printexc.to_string e)))
       in
-      Mutex.unlock dispatch_mutex;
       Some (result_msg id r)
   | _ ->
       if id = `Null then None
@@ -809,15 +868,14 @@ let handle_http_conn (fd : Unix.file_descr) : unit =
      if
        String.length request_line >= 4
        && String.uppercase_ascii (String.sub request_line 0 4) = "POST"
-     then (
+     then
        let body = really_input_string ic clen in
        match handle_message (J.from_string body) with
        | Some resp -> http_response oc (J.to_string resp)
        | None -> http_response oc ~status:"202 Accepted" ""
        | exception e ->
            http_response oc ~status:"500 Internal Server Error"
-             (J.to_string
-                (error_msg `Null (-32700) (Printexc.to_string e))))
+             (J.to_string (error_msg `Null (-32700) (Printexc.to_string e)))
      else
        (* GET <target> HTTP/1.1 -> explorer UI / JSON API *)
        let target =
@@ -825,9 +883,11 @@ let handle_http_conn (fd : Unix.file_descr) : unit =
          | _ :: t :: _ -> t
          | _ -> "/"
        in
-       handle_get oc target
+       with_dispatch (fun () ->
+           refresh_workspace ();
+           handle_get oc target)
    with _ -> ());
-  (try Unix.close fd with _ -> ())
+  try Unix.close fd with _ -> ()
 
 let serve (root : string) (port : int) : unit =
   (* a client hanging up mid-response must be an EPIPE in that connection's

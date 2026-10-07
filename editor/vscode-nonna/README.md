@@ -2,11 +2,13 @@
 
 What you get:
 
-- **Diagnostics** on open/save: every function strongly resembling another
+- **Diagnostics** on open/edit/save: every function strongly resembling another
   function in the workspace gets an Information squiggle on its first line —
   > `avg` is similar to `mean` (util.rs:1) — jaccard 1.00, containment 1.00
 
-  with all matches as expandable related locations in the Problems panel.
+  with matches as expandable related locations in the Problems panel.
+  Positions reflect unsaved buffers, including related locations in other
+  open documents.
 - **Lightbulb actions** on flagged functions: "Diff against `mean`" (two-pane
   diff of just the two function bodies) and "Open similar `mean` to the side".
 - **Command palette**: "nonna: Find Similar Functions" — QuickPick of matches
@@ -35,7 +37,8 @@ code --install-extension nonna-0.0.1.vsix
 
 ## v0 limitations
 
-- The workspace is indexed once when the server starts (a few hundred ms per
-  MB of source); edits don't update the index — reload the window to refresh.
+- The workspace is indexed in the background at startup. Editor changes
+  update the index immediately. Use "nonna: Reindex Workspace" for external
+  edits or file additions/deletions outside the editor.
 - Matches are reported per function against the whole indexed workspace,
-  threshold max(jaccard, containment) >= 0.7, best match only.
+  threshold max(jaccard, containment) >= 0.7, with up to five matches.

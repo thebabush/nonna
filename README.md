@@ -85,9 +85,13 @@ view, with threshold/metric/name/include-exclude-path/size filters), `status`. T
 (jaccard ≈ 1: same up to renaming; containment ≈ 1: "it does everything yours
 does, plus more").
 
-The corpus root is indexed at startup (workspace first, then cargo deps + std
+Create a `.nonna` file at the workspace root to enable MCP indexing. The
+corpus root is indexed at startup (workspace plus cargo deps + std
 from per-`crate@version` caches under `~/.cache/nonna/sigdb` — first dep index
 ~1 min, warm loads < 0.5 s). Check `status` before trusting empty results.
+Subsequent tool and explorer requests check workspace and local dependency
+contents and refresh the index when files change. Registry/Git dependency
+caches are separated by resolved source and source directory.
 
 `nonna serve` also hosts the **duplication explorer** at `http://127.0.0.1:8976/`:
 all similar pairs in the corpus with a threshold slider, name/file/min-size
@@ -96,12 +100,14 @@ navigator and a way to eyeball how the engine scores real code.
 
 ## 🧑‍💻 Editor integration (VSCode)
 
-`editor/vscode-nonna/` — diagnostics on open/save ("`avg` is similar to `mean`
+`editor/vscode-nonna/` — diagnostics on open/edit/save ("`avg` is similar to `mean`
 (util.rs:1) — jaccard 1.00"), expandable related locations in the Problems
 panel, lightbulb actions (function-body diff / open-to-the-side), and a
 "nonna: Find Similar Functions" palette command. Setup: see its README;
 short version: `npm install` there, symlink the folder into
 `~/.vscode/extensions/nonna-dev.nonna-0.0.1`, set `nonna.serverPath`.
+Diagnostics and related locations use current unsaved buffers and refresh
+across open documents. Reindexing preserves edits received during the scan.
 
 ## 🧪 Tests & benchmarks
 
@@ -110,6 +116,7 @@ bash tests/run.sh            # core regressions (fixtures)
 bash tests/sanity.sh         # 16 invariant assertions across Rust/Python/JS/Go
 bash tests/lsp-smoke.sh      # LSP protocol session
 bash tests/mcp-smoke.sh      # MCP stdio + HTTP session (incl. diff algebra)
+node tests/regressions.js   # live indexes, buffer positions, dependency caches (Node 22+)
 bash tests/mine-registry.sh  # mine + evaluate against your local cargo registry
 bash tests/sweep.sh bench-out/paths.txt   # hyperparameter sweep (MRR/recall@k)
 uv run tests/llm_judge.py --pairs ... --scores ...   # LLM-judged pair quality

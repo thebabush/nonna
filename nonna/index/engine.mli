@@ -71,12 +71,14 @@ type query_filter = {
 
 val query :
   ?exclude:int ->
+  ?accept:(meta -> bool) ->
   ?filter:query_filter ->
   t ->
   Nonna_features.Signature.t ->
   threshold:float ->
   max_results:int ->
   hit list
+(** [accept] excludes candidates before ranking and truncation. *)
 
 type pair = {
   a : meta;

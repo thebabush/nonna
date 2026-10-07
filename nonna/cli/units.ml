@@ -20,8 +20,17 @@ let entity_name (ent_opt : G.entity option) : string =
   | Some { G.name = G.EN (G.Id ((s, _), _)); _ } -> s
   | Some { G.name = G.EN (G.IdQualified { G.name_last = (s, _), _; _ }); _ } ->
       s
+  (* A def whose name is a binding PATTERN rather than an identifier:
+     `let f = |x| ...` in Rust, `const f = x => ...` in JS. Very common, and
+     the closure is the function-unit — so take the bound name. *)
+  | Some { G.name = G.EPattern (G.PatId ((s, _), _)); _ } -> s
   | Some _ -> "<entity>"
   | None -> "<lambda>"
+
+(* Units the AST gave no usable name for. They must not act as the qualifying
+   parent of a nested lambda ("<entity>::<lambda>" tells you nothing about
+   where you are) — walk out to a real name instead. *)
+let is_anonymous (name : string) : bool = name = "<lambda>" || name = "<entity>"
 
 (* Lines of actual code in a body: distinct lines carrying at least one AST
    token. Comments and blank lines carry no tokens, so they never count;
@@ -121,6 +130,7 @@ let normalize_ocaml (ast : G.program) : G.program =
   List.map (fun st -> v#visit_stmt () st) ast
 
 let units_of_file (file : string) : unit_info list =
+  let file = try Unix.realpath file with _ -> file in
   let path = Fpath.v file in
   let ast = Parse_target.parse_program path in
   let lang = Lang.lang_of_filename_exn path in
@@ -160,16 +170,16 @@ let units_of_file (file : string) : unit_info list =
             file (Printexc.to_string e))
     ast;
   let units = List.rev !units in
-  (* qualify lambdas by their narrowest enclosing named unit:
+  (* qualify anonymous units by their narrowest enclosing NAMED unit:
      "<lambda>" -> "find_in::<lambda>" *)
   units
   |> List.map (fun u ->
-         if u.uname <> "<lambda>" then u
+         if not (is_anonymous u.uname) then u
          else
            let parent =
              units
              |> List.filter (fun p ->
-                    p.uname <> "<lambda>"
+                    (not (is_anonymous p.uname))
                     && p.uline_start <= u.uline_start
                     && u.uline_end <= p.uline_end)
              |> List.sort (fun a b ->
@@ -178,15 +188,31 @@ let units_of_file (file : string) : unit_info list =
                       (b.uline_end - b.uline_start))
            in
            match parent with
-           | p :: _ -> { u with uname = p.uname ^ "::<lambda>" }
+           | p :: _ -> { u with uname = p.uname ^ "::" ^ u.uname }
            | [] -> u)
 
 (* Languages we index. Rust-focused (D1), but multi-language comes via the
    shared IL — these are the ones exercised by the sanity dataset. *)
 let indexable_exts =
-  [ ".rs"; ".py"; ".js"; ".ts"; ".go"; ".java"; ".c"; ".h";
-    ".cc"; ".cpp"; ".cxx"; ".cppm"; ".hpp"; ".hh"; ".hxx";
-    ".ml"; ".mli" ]
+  [
+    ".rs";
+    ".py";
+    ".js";
+    ".ts";
+    ".go";
+    ".java";
+    ".c";
+    ".h";
+    ".cc";
+    ".cpp";
+    ".cxx";
+    ".cppm";
+    ".hpp";
+    ".hh";
+    ".hxx";
+    ".ml";
+    ".mli";
+  ]
 
 (* build outputs / dependency caches, never source corpus *)
 let skip_dirs = [ "target"; "_build"; "node_modules"; "dist"; "__pycache__" ]
@@ -218,9 +244,7 @@ let source_files_of_paths (paths : string list) : string list =
     | exception _ -> ()
   in
   (* roots may themselves be symlinks (workspace setups): resolve them *)
-  List.iter
-    (fun p -> walk (try Unix.realpath p with _ -> p))
-    paths;
+  List.iter (fun p -> walk (try Unix.realpath p with _ -> p)) paths;
   List.rev !out
 
 let units_of_paths (paths : string list) : unit_info list =
@@ -254,9 +278,9 @@ let is_lambda (u : unit_info) : bool =
 
 (* The narrowest NAMED fn-unit containing a (1-based) line; falls back to
    the narrowest lambda. *)
-let unit_at (path : string) (line : int) : unit_info option =
+let unit_at_in (units : unit_info list) (line : int) : unit_info option =
   let containing =
-    units_of_file path
+    units
     |> List.filter (fun u -> line >= u.uline_start && line <= u.uline_end)
     |> List.sort (fun a b ->
            compare (a.uline_end - a.uline_start) (b.uline_end - b.uline_start))
@@ -264,6 +288,21 @@ let unit_at (path : string) (line : int) : unit_info option =
   match List.find_opt (fun u -> not (is_lambda u)) containing with
   | Some u -> Some u
   | None -> ( match containing with u :: _ -> Some u | [] -> None)
+
+let unit_at path line = unit_at_in (units_of_file path) line
+
+(* Parse editor buffers without changing the user's file. Keep the real
+   document path in metadata so exclusions and related locations agree. *)
+let units_of_text ~(path : string) (text : string) : unit_info list =
+  let tmp = Filename.temp_file "nonna-buffer-" (Filename.extension path) in
+  Fun.protect
+    ~finally:(fun () -> try Sys.remove tmp with Sys_error _ -> ())
+    (fun () ->
+      let oc = open_out_bin tmp in
+      Fun.protect
+        ~finally:(fun () -> close_out_noerr oc)
+        (fun () -> output_string oc text);
+      units_of_file tmp |> List.map (fun u -> { u with ufile = path }))
 
 (* 1-based inclusive line slice of a file. *)
 let file_slice (path : string) (first : int) (last : int) : string list =

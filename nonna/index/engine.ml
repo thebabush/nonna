@@ -179,26 +179,31 @@ let query_pass_all =
 (* Query with an externally-extracted signature. `exclude` skips a fid
    (used to avoid matching a function against itself); `filter` gates the
    matches (defaults to pass-all, preserving the bare-ranking behaviour). *)
-let query ?(exclude = -1) ?(filter = query_pass_all) (t : t)
-    (qsig : Signature.t) ~(threshold : float) ~(max_results : int) : hit list =
-  let smax = if filter.q_scope > 0 then min filter.q_scope (size t) else size t in
+let query ?(exclude = -1) ?(accept = fun (_ : meta) -> true)
+    ?(filter = query_pass_all) (t : t) (qsig : Signature.t) ~(threshold : float)
+    ~(max_results : int) : hit list =
+  let smax =
+    if filter.q_scope > 0 then min filter.q_scope (size t) else size t
+  in
   candidates t qsig
   |> List.filter_map (fun fid ->
          if fid = exclude || fid >= smax then None
          else
            let sg, meta = t.sigs.(fid) in
-           let j = Signature.jaccard qsig sg in
-           let c = Signature.containment ~query:qsig sg in
-           let score = if filter.q_by_max then Float.max j c else j in
-           if
-             score >= threshold
-             && meta.code_lines >= filter.q_min_lines
-             && Signature.size sg >= filter.q_min_features
-             && contains_ci ~sub:filter.q_name_sub meta.name
-             && path_match ~include_paths:filter.q_include_paths
-                  ~exclude_paths:filter.q_exclude_paths meta.file
-           then Some { meta; jaccard = j; containment = c }
-           else None)
+           if not (accept meta) then None
+           else
+             let j = Signature.jaccard qsig sg in
+             let c = Signature.containment ~query:qsig sg in
+             let score = if filter.q_by_max then Float.max j c else j in
+             if
+               score >= threshold
+               && meta.code_lines >= filter.q_min_lines
+               && Signature.size sg >= filter.q_min_features
+               && contains_ci ~sub:filter.q_name_sub meta.name
+               && path_match ~include_paths:filter.q_include_paths
+                    ~exclude_paths:filter.q_exclude_paths meta.file
+             then Some { meta; jaccard = j; containment = c }
+             else None)
   |> List.sort (fun a b ->
          compare
            (Float.max b.jaccard b.containment, b.jaccard)

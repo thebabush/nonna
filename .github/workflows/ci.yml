@@ -51,6 +51,10 @@ jobs:
           . vendor/opengrep/libs/ocaml-tree-sitter-core/tree-sitter-config.sh
           dune build nonna
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
       - name: tests
         run: |
           eval $(opam env)
@@ -58,6 +62,7 @@ jobs:
           bash tests/sanity.sh
           bash tests/lsp-smoke.sh
           bash tests/mcp-smoke.sh
+          node tests/regressions.js
 
       # CI artifacts, not portable releases: the binary needs the bundled
       # libtree-sitter (via the wrapper) and pcre/pcre2 from your package
