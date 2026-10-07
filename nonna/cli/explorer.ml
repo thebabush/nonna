@@ -19,6 +19,7 @@ let meta_json (m : Engine.meta) : J.t =
       ("start", `Int m.Engine.line_start);
       ("end", `Int m.Engine.line_end);
       ("lines", `Int m.Engine.code_lines);
+      ("test", `Bool m.Engine.is_test);
     ]
 
 let pairs_json (eng : Engine.t) ~(ready : bool) : J.t =

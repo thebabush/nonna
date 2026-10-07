@@ -33,19 +33,6 @@ let send (j : J.t) : unit =
   flush stdout;
   Mutex.unlock send_mutex
 
-let reply (id : J.t) (result : J.t) : unit =
-  send (`Assoc [ ("jsonrpc", `String "2.0"); ("id", id); ("result", result) ])
-
-let reply_error (id : J.t) (code : int) (msg : string) : unit =
-  send
-    (`Assoc
-      [
-        ("jsonrpc", `String "2.0");
-        ("id", id);
-        ( "error",
-          `Assoc [ ("code", `Int code); ("message", `String msg) ] );
-      ])
-
 (* tools/call result helpers *)
 let tool_text ?(is_error = false) (text : string) : J.t =
   `Assoc
@@ -62,6 +49,7 @@ let engine : Engine.t ref = ref Engine.empty
 let index_root = ref ""
 let indexing_done = ref false
 let workspace_fns = ref 0
+let workspace_test_fns = ref 0 (* of [workspace_fns], flagged as test code *)
 let dep_count = ref 0
 let dep_fns = ref 0
 
@@ -71,12 +59,105 @@ let dep_fns = ref 0
 let marker_name = ".nonna"
 let enabled = ref false
 
+(* Workspace path scope from .nonna: a file is indexed when it matches some
+   `include` substring (or there are none) and no `exclude` substring — the
+   same case-insensitive substring semantics as the tool filters. Without it
+   a repo that vendors a parser or keeps benchmark corpora indexes all of it
+   as "my code": nonna-v2 itself came out at 96k functions, 114s to index and
+   126s per dupe scan, every top pair two versions of the same vendored
+   package; scoped to its own sources it is a few thousand. *)
+let workspace_include : string list ref = ref []
+let workspace_exclude : string list ref = ref []
+
+let workspace_file_ok (file : string) : bool =
+  Engine.path_match ~include_paths:!workspace_include
+    ~exclude_paths:!workspace_exclude file
+
+let workspace_files (roots : string list) : string list =
+  Units.source_files_of_paths roots |> List.filter workspace_file_ok
+
+(* The marker doubles as per-workspace config: `key = value` lines, `#`
+   comments. Keys: literals = true|false (see Dfg.set_literals), profile =
+   structural|full, include / exclude = comma-separated path substrings (see
+   [workspace_file_ok]). Anything else is ignored. Applied before indexing,
+   so the settings shape the index itself (and the literals one is part of
+   the sigdb profile tag). *)
+let apply_marker_config (path : string) : unit =
+  let csv v =
+    String.split_on_char ',' v |> List.map String.trim
+    |> List.filter (fun s -> s <> "")
+  in
+  Units.file_slice path 1 max_int
+  |> List.iter (fun line ->
+         match String.index_opt line '#' with
+         | Some 0 -> ()
+         | _ -> (
+             match String.split_on_char '=' line with
+             | [ k; v ] -> (
+                 match (String.trim k, String.trim v) with
+                 | "literals", ("true" | "on" | "1") -> Dfg.set_literals true
+                 | "literals", ("false" | "off" | "0") -> Dfg.set_literals false
+                 | "profile", "full" ->
+                     Signature.default_profile := Signature.full_profile
+                 | "profile", "structural" ->
+                     Signature.default_profile := Signature.structural_profile
+                 | "include", v -> workspace_include := csv v
+                 | "exclude", v -> workspace_exclude := csv v
+                 | _ -> ())
+             | _ -> ()))
+
+let literals_desc () : string =
+  if Dfg.literals_on () then
+    "on (string/float/int literal values are hashed: functions differing \
+     only in constants do not match)"
+  else
+    "off (literal values ignored: match tables and one-query wrappers that \
+     differ only in constants score 1.0; set `literals = true` in .nonna or \
+     start with --literals)"
+
 (* Tool dispatch, refreshes and explorer reads share one state boundary. *)
 let dispatch_mutex = Mutex.create ()
 
 let with_dispatch f =
   Mutex.lock dispatch_mutex;
   Fun.protect ~finally:(fun () -> Mutex.unlock dispatch_mutex) f
+
+(* ── Cancellation ────────────────────────────────────────────────────────
+   Every tools/call runs on its own thread so the stdio loop keeps reading
+   while a scan runs. A client that gives up sends MCP
+   `notifications/cancelled` (the SDKs do on timeout or abort); that flips
+   the request's flag and the running scan stops at its next poll instead of
+   grinding on for an answer nobody will read — before this, each aborted
+   sweep cost the full scan at 100% CPU, and they queued. Calls still execute
+   one at a time under [dispatch_mutex]; one cancelled while queued returns
+   as soon as its turn comes. *)
+let cancel_mutex = Mutex.create ()
+let in_flight : (string, bool ref) Hashtbl.t = Hashtbl.create 8
+
+let with_cancel_flag (id : J.t) (f : bool ref -> 'a) : 'a =
+  let key = J.to_string id in
+  let flag = ref false in
+  Mutex.lock cancel_mutex;
+  Hashtbl.replace in_flight key flag;
+  Mutex.unlock cancel_mutex;
+  Fun.protect
+    ~finally:(fun () ->
+      Mutex.lock cancel_mutex;
+      Hashtbl.remove in_flight key;
+      Mutex.unlock cancel_mutex)
+    (fun () -> f flag)
+
+let cancel_request (id : J.t) : unit =
+  Mutex.lock cancel_mutex;
+  (match Hashtbl.find_opt in_flight (J.to_string id) with
+  | Some flag -> flag := true
+  | None -> ());
+  Mutex.unlock cancel_mutex
+
+(* Stop predicate of the tool call currently executing; long scans poll it. *)
+let stop_requested : (unit -> bool) ref = ref (fun () -> false)
+
+exception Cancelled
 
 let dependencies : Corpus.dep list ref = ref []
 let indexed_stamp : (string * string option) list ref = ref []
@@ -92,7 +173,7 @@ let workspace_stamp root deps =
          deps
   in
   let files =
-    Units.source_files_of_paths roots
+    workspace_files roots
     @ List.concat_map
         (fun dir ->
           List.map (Filename.concat dir) [ "Cargo.toml"; "Cargo.lock" ])
@@ -106,7 +187,7 @@ let workspace_stamp root deps =
 
 let build_snapshot root deps =
   let stamp = workspace_stamp root deps in
-  let workspace = Corpus.index_dir root in
+  let workspace = Corpus.index_files (workspace_files [ root ]) in
   let files = Hashtbl.create 256 in
   List.iter
     (fun (e : Sigdb.entry) -> Hashtbl.replace files e.meta.file ())
@@ -132,6 +213,10 @@ let install_snapshot deps (snapshot, count, stamp) =
   engine := snapshot;
   dependencies := deps;
   workspace_fns := count;
+  workspace_test_fns := 0;
+  for fid = 0 to count - 1 do
+    if (Engine.get_meta snapshot fid).Engine.is_test then incr workspace_test_fns
+  done;
   dep_count := List.length deps;
   dep_fns := Engine.size snapshot - count;
   indexed_stamp := stamp;
@@ -149,6 +234,7 @@ let index_async root =
   let root = try Unix.realpath root with _ -> root in
   index_root := root;
   enabled := Sys.file_exists (Filename.concat root marker_name);
+  if !enabled then apply_marker_config (Filename.concat root marker_name);
   if not !enabled then indexing_done := true
   else
     ignore
@@ -278,12 +364,19 @@ let query_unit (u : Units.unit_info) ~(threshold : float) ~(top_k : int)
     Engine.query !engine sg ~threshold ~max_results:top_k ~filter
       ~accept:(fun m -> not (Engine.nests self_m m))
 
-let hits_text (label : string) (hits : Engine.hit list) : string =
+let hits_text (label : string) ~(filter : Engine.query_filter)
+    (hits : Engine.hit list) : string =
   if hits = [] then
     Printf.sprintf
-      "No similar function found for %s.\n(The index holds %d functions%s.)"
+      "No similar function found for %s.\n(The index holds %d functions%s%s.)"
       label (Engine.size !engine)
       (if !indexing_done then "" else "; indexing is still running")
+      (if (not filter.Engine.q_include_tests) && !workspace_test_fns > 0 then
+         Printf.sprintf
+           "; %d workspace test-code functions excluded — pass \
+            include_tests:true to rank against them"
+           !workspace_test_fns
+       else "")
   else
     Printf.sprintf "Functions similar to %s:\n\n%s" label
       (String.concat "\n\n" (List.map hit_block hits))
@@ -378,7 +471,8 @@ let diff_functions (args : J.t) : J.t =
    the function to query and so can't double as a result filter. Unlike
    find_duplicates, the score gate defaults to max(j,c) and matches against
    deps/std by default (a single query is cheap; the workspace-only scope is
-   opt-in via include_deps:false). *)
+   opt-in via include_deps:false). Test code is excluded unless include_tests
+   is set: a drafted function wants a production twin, not a test case. *)
 let query_filter_of_args ?(with_name = true) (args : J.t) : Engine.query_filter =
   let include_deps = Option.value (bool_arg args "include_deps") ~default:true in
   {
@@ -391,6 +485,8 @@ let query_filter_of_args ?(with_name = true) (args : J.t) : Engine.query_filter 
     q_min_lines = Option.value (int_arg args "min_lines") ~default:0;
     q_min_features = Option.value (int_arg args "min_features") ~default:0;
     q_scope = (if include_deps then 0 else !workspace_fns);
+    q_include_tests =
+      Option.value (bool_arg args "include_tests") ~default:false;
   }
 
 (* ── find_duplicates: whole-corpus clone pairs (no query function) ───────── *)
@@ -420,6 +516,9 @@ let find_duplicates (args : J.t) : J.t =
        outer (a) side is always the workspace prefix; include_deps only widens
        the (b) side, so cost stays O(workspace · candidates). *)
     let include_deps = Option.value (bool_arg args "include_deps") ~default:false in
+    let include_tests =
+      Option.value (bool_arg args "include_tests") ~default:false
+    in
     let flt =
       {
         Engine.threshold =
@@ -434,22 +533,52 @@ let find_duplicates (args : J.t) : J.t =
         limit = Option.value (int_arg args "limit") ~default:50;
         scope_a = !workspace_fns;
         scope_b = (if include_deps then 0 else !workspace_fns);
+        include_tests;
       }
     in
-    let pairs = Engine.duplicates_filtered !engine flt in
+    (* A wall-clock budget backs up client cancellation: a scan that outlives
+       it returns what it found so far, flagged partial, rather than holding
+       the (serialized) dispatcher for everyone else. *)
+    let budget = Option.value (float_arg args "time_budget_s") ~default:120. in
+    let deadline = Unix.gettimeofday () +. budget in
+    let stop = !stop_requested in
+    let scan =
+      Engine.duplicates_scan !engine flt ~should_stop:(fun () ->
+          stop () || (budget > 0. && Unix.gettimeofday () > deadline))
+    in
+    if stop () then raise Cancelled;
+    let pairs = scan.Engine.pairs in
     let scope_desc =
-      if include_deps then "workspace × (workspace + deps/std)"
-      else Printf.sprintf "workspace-internal (%d fns; pass include_deps to widen)"
-             !workspace_fns
+      (if include_deps then "workspace × (workspace + deps/std)"
+       else
+         Printf.sprintf "workspace-internal (%d fns; pass include_deps to widen)"
+           !workspace_fns)
+      ^
+      if include_tests then ""
+      else
+        Printf.sprintf
+          "; %d workspace fns are test code and were excluded (include_tests \
+           to keep them)"
+          !workspace_test_fns
+    in
+    let partial =
+      if scan.Engine.complete then ""
+      else
+        Printf.sprintf
+          "\n\nPARTIAL: the %.0fs time budget stopped the scan after %d of %d \
+           functions. Narrow it (include/name/min_lines) or raise time_budget_s."
+          budget scan.Engine.scanned scan.Engine.total
     in
     if pairs = [] then
       tool_text
-        (Printf.sprintf "No %s duplicate pairs above the given filters." scope_desc)
+        (Printf.sprintf "No duplicate pairs above the given filters, %s.%s"
+           scope_desc partial)
     else
       tool_text
-        (Printf.sprintf "%d duplicate pair(s), %s:\n\n%s" (List.length pairs)
+        (Printf.sprintf "%d duplicate pair(s), %s:\n\n%s%s" (List.length pairs)
            scope_desc
-           (String.concat "\n" (List.map dup_line pairs)))
+           (String.concat "\n" (List.map dup_line pairs))
+           partial)
 
 (* ── Tools ───────────────────────────────────────────────────────────────── *)
 
@@ -492,13 +621,16 @@ let tool_defs : J.t =
       `Assoc
         [
           ("name", `String "find_similar");
+          ("title", `String "Find existing functions similar to drafted code");
           ( "description",
             `String
-              "Find existing functions structurally similar to a drafted \
-               one. Call this BEFORE committing a freshly written function: \
-               if a strong match exists (jaccard or containment near 1), \
-               prefer calling the existing function instead of adding a \
-               duplicate." );
+              "Find existing functions in the workspace and its dependencies \
+               that are structurally similar to a code snippet you have just \
+               written (reuse-before-write check). Takes the drafted function \
+               as a code string, returns ranked matches with jaccard and \
+               containment scores and their source. Call it before committing \
+               a new function: a match near 1.0 means an equivalent already \
+               exists and should be called instead of duplicated." );
           ( "inputSchema",
             schema
               [
@@ -523,16 +655,23 @@ let tool_defs : J.t =
                 ("min_features", "integer", "drop matches with fewer features");
                 ("include_deps", "boolean",
                  "rank against deps/std too (default true; false = workspace only)");
+                ("include_tests", "boolean",
+                 "also rank against test code (#[cfg(test)]/#[test] fns, test \
+                  files); default false");
               ]
               [ "code" ] );
         ];
       `Assoc
         [
           ("name", `String "query_similar");
+          ("title", `String "Find functions similar to one on disk");
           ( "description",
             `String
-              "Find functions similar to one already on disk, identified by \
-               file plus a line inside it or its name." );
+              "Find functions structurally similar to an existing function, \
+               identified by its file plus a line inside it or its name. Use \
+               it to locate copies, variants and refactor candidates of code \
+               already in the repository; for code not yet saved use \
+               find_similar. Returns ranked matches with scores and source." );
           ( "inputSchema",
             schema
               ([
@@ -556,19 +695,25 @@ let tool_defs : J.t =
                  ("include_deps", "boolean",
                   "rank against deps/std too (default true; false = workspace \
                    only)");
+                 ("include_tests", "boolean",
+                  "also rank against test code (#[cfg(test)]/#[test] fns, test \
+                   files); default false");
                ])
               [ "file" ] );
         ];
       `Assoc
         [
           ("name", `String "diff_functions");
+          ("title", `String "Compare two functions structurally");
           ( "description",
             `String
-              "Structural set-algebra over two functions A and B: similarity \
-               scores (A ∩ B) plus the regions unique to each side, grouped \
-               by source line. For a buggy function A and its fixed version \
-               B: A−B localizes ≈ the bug, B−A ≈ the fix. Each side is given \
-               as code (<side>_code) or as <side>_file + <side>_line/_name." );
+              "Compare two functions A and B structurally: their similarity \
+               scores (A ∩ B) plus the dataflow regions unique to each side, \
+               grouped by source line. For a buggy function A and its fixed \
+               version B, A−B localizes the bug and B−A the fix; for two \
+               variants it shows exactly where they diverge. Each side is \
+               given as code (<side>_code) or as <side>_file plus \
+               <side>_line or <side>_name." );
           ( "inputSchema",
             schema (side_props "a" "function A" @ side_props "b" "function B") []
           );
@@ -576,15 +721,23 @@ let tool_defs : J.t =
       `Assoc
         [
           ("name", `String "find_duplicates");
+          ("title", `String "List duplicate function pairs in the workspace");
           ( "description",
             `String
-              "List structurally similar function PAIRS — no query function \
-               needed (the dedup / refactor view; complements find_similar's \
-               single-function reuse check). Scans WORKSPACE functions by \
-               default (set include_deps to also match against deps/std). Each \
-               pair reports jaccard and containment. Filters: threshold, metric \
-               (max|jaccard), name substring, include/exclude path substrings \
-               (scope to or skip files/folders), min_lines, min_features, limit." );
+              "List pairs of structurally duplicate (clone, copy-pasted, \
+               near-identical) functions across the whole workspace, with no \
+               query function needed: the dedup and refactor view. Each pair \
+               reports jaccard and containment with both locations. Scans \
+               workspace functions by default; include_deps also matches them \
+               against dependencies and std. Test code is skipped unless \
+               include_tests is set, since test cases duplicate each other by \
+               design. Known false positives of rename invariance: \
+               enum-to-string match tables, one-query DB wrappers and \
+               cfg(unix)/cfg(not(unix)) twins score 1.0 against their siblings \
+               (the literals setting in .nonna separates most of them); \
+               min_lines and min_features drop the one-line closures. Other \
+               filters: threshold, metric (max|jaccard), name substring, \
+               include/exclude path substrings, limit, time_budget_s." );
           ( "inputSchema",
             schema
               [
@@ -611,14 +764,25 @@ let tool_defs : J.t =
                 ("include_deps", "boolean",
                  "also match workspace fns against deps/std (default false: \
                   workspace-internal only)");
+                ("include_tests", "boolean",
+                 "keep pairs with a test-code side (default false)");
+                ("time_budget_s", "number",
+                 "wall-clock budget; a scan that outlives it returns partial \
+                  results marked PARTIAL (default 120, 0 = unlimited)");
               ]
               [] );
         ];
       `Assoc
         [
           ("name", `String "status");
+          ("title", `String "Show nonna index status");
           ( "description",
-            `String "Index status: corpus root, size, readiness." );
+            `String
+              "Show the nonna index status: workspace root, how many functions \
+               are indexed (workspace, test code, dependencies), whether \
+               background indexing has finished, and the literals setting. \
+               Call it first; results from the other tools while indexing is \
+               still in progress are inconclusive." );
           ("inputSchema", schema [] []);
         ];
     ]
@@ -636,11 +800,12 @@ let call_tool (name : string) (args : J.t) : J.t =
       else
         tool_text
           (Printf.sprintf
-             "root: %s\nindexed functions: %d (%d workspace + %d from %d \
-              deps/std)\nindexing: %s"
-             !index_root (Engine.size !engine) !workspace_fns !dep_fns
-             !dep_count
-             (if !indexing_done then "done" else "in progress"))
+             "root: %s\nindexed functions: %d (%d workspace, of which %d test \
+              code; %d from %d deps/std)\nindexing: %s\nliterals: %s"
+             !index_root (Engine.size !engine) !workspace_fns
+             !workspace_test_fns !dep_fns !dep_count
+             (if !indexing_done then "done" else "in progress")
+             (literals_desc ()))
   | ("find_similar" | "query_similar" | "diff_functions" | "find_duplicates")
     when not !enabled ->
       tool_text ~is_error:true
@@ -668,6 +833,7 @@ let call_tool (name : string) (args : J.t) : J.t =
               |> List.map (fun (u : Units.unit_info) ->
                      hits_text
                        ("drafted `" ^ u.Units.uname ^ "`")
+                       ~filter
                        (query_unit u ~threshold ~top_k ~filter))
               |> String.concat "\n\n---\n\n" |> tool_text))
   | "query_similar" -> (
@@ -696,7 +862,16 @@ let call_tool (name : string) (args : J.t) : J.t =
                 (hits_text
                    (Printf.sprintf "`%s` (%s:%d)" u.Units.uname file
                       u.Units.uline_start)
-                   (query_unit u ~threshold ~top_k ~filter))))
+                   ~filter
+                   (query_unit u ~threshold ~top_k ~filter)
+                ^
+                if u.Units.utest && not filter.Engine.q_include_tests then
+                  Printf.sprintf
+                    "\n\n(`%s` is test code; other test functions are excluded \
+                     from matches by default — pass include_tests:true to rank \
+                     against them.)"
+                    u.Units.uname
+                else "")))
   | "diff_functions" -> diff_functions args
   | "find_duplicates" -> find_duplicates args
   | _ -> tool_text ~is_error:true ("unknown tool: " ^ name)
@@ -704,27 +879,41 @@ let call_tool (name : string) (args : J.t) : J.t =
 (* ── Dispatch ────────────────────────────────────────────────────────────── *)
 
 (* Server-level context for the LLM (MCP `instructions`): what kind of
-   similarity this is, and how to read the numbers. *)
-let instructions =
+   similarity this is and how to read the numbers — the shared workflow only.
+   Clients fold these instructions into EVERY tool's retrieval text, so
+   tool-specific capabilities and caveats live in each tool's description
+   (see ~/work/hr/mcp-tool-selection/docs/tool-naming.md). Computed per
+   initialize: the literals line depends on the workspace config. *)
+let instructions () =
   "nonna finds structurally similar functions: each function's resolved \
    control/data-flow graph (semgrep/opengrep IL) is hashed into a feature \
    set via iterative dataflow hashing; similarity = weighted jaccard + \
    asymmetric containment over those sets. Queries are code (snippets or \
    file locations); natural-language queries will not work. Matching is \
-   rename-invariant: variable names, identifiers, literal values and \
-   concrete types are ignored by default — two functions match if they \
-   compute the same way. Reading scores: jaccard ≈ 1.0 means same function \
-   up to renaming/formatting; containment ≈ 1.0 means the other function \
-   does everything this one does (and possibly more) — a strong 'call it \
-   instead' signal even when jaccard is moderate. The workspace is indexed \
-   at startup in the background (seconds for normal repos, ~a minute for \
-   huge ones): call `status` first; an empty result while indexing is still \
-   in progress is inconclusive, not a no-match. find_similar/query_similar \
-   take one function and rank existing matches; find_duplicates needs no query \
-   and lists similar PAIRS across the whole corpus (dedup/refactor), with \
-   name/file/size/threshold filters."
+   rename-invariant: variable names, identifiers and concrete types are \
+   ignored — two functions match if they compute the same way. Literal \
+   values: "
+  ^ (if Dfg.literals_on () then
+       "hashed in this workspace (literals = true), so functions that differ \
+        only in constants do not match."
+     else
+       "ignored in this workspace (the default), so a match table or wrapper \
+        that differs only in constants scores 1.0 against its siblings.")
+  ^ " Reading scores: jaccard ≈ 1.0 means same function up to \
+     renaming/formatting; containment ≈ 1.0 means the other function does \
+     everything this one does (and possibly more) — a strong 'call it \
+     instead' signal even when jaccard is moderate. The workspace is indexed \
+     at startup in the background: call `status` first; an empty result \
+     while indexing is still in progress is inconclusive, not a no-match. \
+     Test code is excluded from matches by default; pass include_tests:true \
+     to any tool to rank against it."
 
-(* Returns Some response for requests, None for notifications. *)
+(* [Reply]: a response to send now. [Silent]: a notification, nothing to
+   send. [Deferred]: a tool call — the transport decides whether to run it
+   inline (HTTP: the connection's own thread) or on a fresh thread (stdio:
+   so the read loop stays free to see a cancellation for it). *)
+type reply = Reply of J.t | Silent | Deferred of (unit -> J.t)
+
 let result_msg (id : J.t) (result : J.t) : J.t =
   `Assoc [ ("jsonrpc", `String "2.0"); ("id", id); ("result", result) ]
 
@@ -736,7 +925,7 @@ let error_msg (id : J.t) (code : int) (msg : string) : J.t =
       ("error", `Assoc [ ("code", `Int code); ("message", `String msg) ]);
     ]
 
-let handle_message (msg : J.t) : J.t option =
+let handle_message (msg : J.t) : reply =
   let meth = try JU.member "method" msg |> JU.to_string with _ -> "" in
   let id = JU.member "id" msg in
   let params = JU.member "params" msg in
@@ -746,7 +935,7 @@ let handle_message (msg : J.t) : J.t option =
         try JU.member "protocolVersion" params |> JU.to_string
         with _ -> "2024-11-05"
       in
-      Some
+      Reply
         (result_msg id
            (`Assoc
               [
@@ -755,33 +944,68 @@ let handle_message (msg : J.t) : J.t option =
                 ( "serverInfo",
                   `Assoc
                     [ ("name", `String "nonna"); ("version", `String "0.1") ] );
-                ("instructions", `String instructions);
+                ("instructions", `String (instructions ()));
               ]))
-  | "notifications/initialized" -> None
-  | "ping" -> Some (result_msg id (`Assoc []))
-  | "tools/list" -> Some (result_msg id (`Assoc [ ("tools", tool_defs) ]))
+  | "notifications/initialized" -> Silent
+  | "notifications/cancelled" ->
+      cancel_request (JU.member "requestId" params);
+      Silent
+  | "ping" -> Reply (result_msg id (`Assoc []))
+  | "tools/list" -> Reply (result_msg id (`Assoc [ ("tools", tool_defs) ]))
   | "tools/call" ->
       let name = try JU.member "name" params |> JU.to_string with _ -> "" in
       let args = JU.member "arguments" params in
-      let r =
-        with_dispatch (fun () ->
-            Fun.protect
-              ~finally:(fun () -> Hashtbl.clear code_cache)
-              (fun () ->
-                try
-                  refresh_workspace ();
-                  call_tool name args
-                with e -> tool_text ~is_error:true (Printexc.to_string e)))
-      in
-      Some (result_msg id r)
+      Deferred
+        (fun () ->
+          with_cancel_flag id (fun flag ->
+              with_dispatch (fun () ->
+                  if !flag then error_msg id (-32800) "request cancelled"
+                  else (
+                    stop_requested := (fun () -> !flag);
+                    Fun.protect
+                      ~finally:(fun () ->
+                        stop_requested := (fun () -> false);
+                        Hashtbl.clear code_cache)
+                      (fun () ->
+                        let r =
+                          try
+                            refresh_workspace ();
+                            call_tool name args
+                          with
+                          | Cancelled ->
+                              tool_text ~is_error:true "request cancelled"
+                          | e -> tool_text ~is_error:true (Printexc.to_string e)
+                        in
+                        result_msg id r)))))
   | _ ->
-      if id = `Null then None
-      else Some (error_msg id (-32601) ("unhandled: " ^ meth))
+      if id = `Null then Silent
+      else Reply (error_msg id (-32601) ("unhandled: " ^ meth))
 
 (* ── stdio transport (newline-delimited JSON) ────────────────────────────── *)
 
 let run (root : string) : unit =
   index_async root;
+  (* Deferred calls answer from their own threads; on EOF, drain them before
+     exiting so a client that pipes requests and closes stdin (the smoke
+     test; any batch driver) still gets every reply. *)
+  let pending = ref 0 in
+  let pending_mutex = Mutex.create () in
+  let pending_done = Condition.create () in
+  let spawn run =
+    Mutex.lock pending_mutex;
+    incr pending;
+    Mutex.unlock pending_mutex;
+    ignore
+      (Thread.create
+         (fun () ->
+           (try send (run ())
+            with e -> prerr_endline ("nonna mcp: " ^ Printexc.to_string e));
+           Mutex.lock pending_mutex;
+           decr pending;
+           Condition.broadcast pending_done;
+           Mutex.unlock pending_mutex)
+         ())
+  in
   let rec loop () =
     match input_line stdin with
     | line ->
@@ -789,13 +1013,19 @@ let run (root : string) : unit =
            match J.from_string line with
            | msg -> (
                match handle_message msg with
-               | Some resp -> send resp
-               | None -> ()
+               | Reply resp -> send resp
+               | Silent -> ()
+               | Deferred run -> spawn run
                | exception e ->
                    prerr_endline ("nonna mcp: " ^ Printexc.to_string e))
            | exception _ -> ());
         loop ()
-    | exception End_of_file -> ()
+    | exception End_of_file ->
+        Mutex.lock pending_mutex;
+        while !pending > 0 do
+          Condition.wait pending_done pending_mutex
+        done;
+        Mutex.unlock pending_mutex
   in
   loop ()
 
@@ -871,8 +1101,9 @@ let handle_http_conn (fd : Unix.file_descr) : unit =
      then
        let body = really_input_string ic clen in
        match handle_message (J.from_string body) with
-       | Some resp -> http_response oc (J.to_string resp)
-       | None -> http_response oc ~status:"202 Accepted" ""
+       | Reply resp -> http_response oc (J.to_string resp)
+       | Deferred run -> http_response oc (J.to_string (run ()))
+       | Silent -> http_response oc ~status:"202 Accepted" ""
        | exception e ->
            http_response oc ~status:"500 Internal Server Error"
              (J.to_string (error_msg `Null (-32700) (Printexc.to_string e)))

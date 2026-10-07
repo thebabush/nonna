@@ -30,7 +30,10 @@ check "precision: join_with nothing >= 0.4" \
   "[ -z \"\$JOIN_MAX\" ] || awk -v x=\"\$JOIN_MAX\" 'BEGIN{exit !(x < 0.4)}'"
 
 # Dupes: across fixtures + spike, the only >=0.9 pair is mean <-> avg.
-DUPES=$("$BIN" dupes tests/fixtures spike -t 0.9 | grep -c '<->')
+# (the fixtures live under tests/, which the test-code path rule flags: --tests)
+DUPES=$("$BIN" dupes tests/fixtures spike -t 0.9 --tests | grep -c '<->')
 check "dupes: exactly one high-sim pair in fixtures" "[ \"\$DUPES\" = 1 ]"
+NOTESTS=$("$BIN" dupes tests/fixtures spike -t 0.9 | grep -c '<->')
+check "dupes: test-path units skipped by default" "[ \"\$NOTESTS\" = 0 ]"
 
 exit $fail

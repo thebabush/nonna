@@ -3,7 +3,7 @@
  *   nonna features <file>                      debug: per-fn feature dump
  *   nonna dupes <dir|files...> [-t 0.5]        intra-corpus clone pairs
  *       filters: --metric max|jaccard, --name SUB, --include/--exclude SUB,SUB,
- *                --min-lines/--min-features N, -n LIMIT
+ *                --min-lines/--min-features N, -n LIMIT, --tests (include test code)
  *   nonna query <corpus...> -- <draft.rs> [-t 0.25] [-k 5]
  *       reuse-before-write: for each fn in draft, top matches in corpus
  *   nonna graph <file> [--fn NAME] [-o DIR]    DOT per propagation round
@@ -23,9 +23,10 @@ let cmd_features (file : string) =
   |> List.iter (fun (u : Units.unit_info) ->
          let feats = Dfg.extract u.Units.ucfg in
          let sg = Signature.extract ~lang:u.Units.ulang u.Units.ucfg in
-         Printf.printf "=== %s (%s) — %d dfg features, %d total\n"
-           u.Units.uname (Units.loc_str u) (List.length feats)
-           (Signature.size sg);
+         Printf.printf "=== %s (%s)%s — %d dfg features, %d total\n"
+           u.Units.uname (Units.loc_str u)
+           (if u.Units.utest then " [test]" else "")
+           (List.length feats) (Signature.size sg);
          feats
          |> List.iter (fun (f : Dfg.feature) ->
                 Printf.printf "  %016x %s\n" f.Dfg.hash
@@ -34,9 +35,14 @@ let cmd_features (file : string) =
 let cmd_dupes (paths : string list) (flt : Engine.dup_filter) =
   let units = Units.units_of_paths paths in
   let eng, kept = Units.index_units units in
-  Printf.printf "indexed %d units (of %d; min %d features) from %d file(s)\n"
+  let tests =
+    List.length (List.filter (fun ((u : Units.unit_info), _) -> u.Units.utest) kept)
+  in
+  Printf.printf "indexed %d units (of %d; min %d features) from %d file(s)%s\n"
     (List.length kept) (List.length units) Units.min_features
-    (List.length (Units.source_files_of_paths paths));
+    (List.length (Units.source_files_of_paths paths))
+    (if flt.Engine.include_tests then ""
+     else Printf.sprintf "; skipping %d test units (--tests to include)" tests);
   let pairs = Engine.duplicates_filtered eng flt in
   if pairs = [] then print_endline "no duplicate candidates above threshold."
   else
@@ -181,6 +187,7 @@ let parse_flags (args : string list) : string list * (string * string) list =
     | "--min-features" :: v :: rest -> go pos (("min-features", v) :: flags) rest
     | "--metric" :: v :: rest -> go pos (("metric", v) :: flags) rest
     | "--fn" :: v :: rest -> go pos (("fn", v) :: flags) rest
+    | "--tests" :: rest -> go pos (("tests", "1") :: flags) rest
     | "--sample" :: v :: rest -> go pos (("sample", v) :: flags) rest
     | "--ext" :: v :: rest -> go pos (("ext", v) :: flags) rest
     | x :: rest -> go (x :: pos) flags rest
@@ -200,7 +207,7 @@ let usage () =
     \  nonna features <file>\n\
     \  nonna dupes <dir|files...> [-t 0.5] [--metric max|jaccard] [-n LIMIT]\n\
     \                            [--name SUB] [--include SUB,..] [--exclude SUB,..]\n\
-    \                            [--min-lines N] [--min-features N]\n\
+    \                            [--min-lines N] [--min-features N] [--tests]\n\
     \  nonna query <corpus...> -- <draft.rs> [-t 0.25] [-k 5]\n\
     \  nonna graph <file> [--fn NAME] [-o DIR]   (DOT per propagation round)\n\
     \  nonna dump-il <file> [--fn NAME]          (compact IL CFG)\n\
@@ -212,13 +219,18 @@ let usage () =
     \  nonna mcp [root]                          (stdio MCP server; index root)\n\
     \  nonna serve [root] [-p 8976]              (HTTP MCP server, shared warm index)\n\
     \  nonna corpus <root>                       (debug: cargo deps + std discovery)\n\
-    \  (global: --profile structural|full, --iters N, --with ch1,ch2)";
+    \  (global: --profile structural|full, --literals, --iters N, --with ch1,ch2)\n\
+    \  --literals: hash literal values too (string/float; ints always), so\n\
+    \             functions that differ only in constants stop matching";
   exit 1
 
 (* Global --profile flag (D14): structural (default, name-free hashing) or
    full (adds the name/value/type channels). Stripped before dispatch. *)
 let rec strip_profile acc = function
   | [] -> List.rev acc
+  | "--literals" :: rest ->
+      Dfg.set_literals true;
+      strip_profile acc rest
   | "--profile" :: v :: rest ->
       (match v with
       | "structural" -> Signature.default_profile := Signature.structural_profile
@@ -304,6 +316,7 @@ let () =
           limit = flag flags "n" 0 int_of_string;
           scope_a = 0;
           scope_b = 0;
+          include_tests = List.mem_assoc "tests" flags;
         }
   | "parse-stats" :: rest ->
       let pos, flags = parse_flags rest in

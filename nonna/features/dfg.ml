@@ -178,6 +178,21 @@ let keep_value (fc : cfg) (kind : string) : bool =
 let base_cfg : cfg ref =
   ref { structural_cfg with call_names = true; int_values = true }
 
+(* The literal switch (cf. Ghidra BSim's constant-inclusion setting): fold
+   string and float literal VALUES into every language's base hashes (ints
+   already are). Off by default because it costs recall on renamed/evolved
+   clones whose messages and formats drift; on, it separates the shapes that
+   rename invariance collapses — enum-to-string match tables, one-query DB
+   wrappers, per-format accessors — which otherwise all score 1.0 against each
+   other (measured on a 5k-fn Rust workspace: dupe pairs at 0.7 fell 15.2k ->
+   6.3k, enum-table pairs 537 -> 140; the sanity contract still passes).
+   Part of the sigdb profile tag, so caches for the two settings never mix. *)
+let set_literals (on : bool) : unit =
+  base_cfg := { !base_cfg with string_values = on; float_values = on }
+
+let literals_on () : bool =
+  !base_cfg.string_values && !base_cfg.float_values
+
 (* Per-language base (N8 sweeps, issue #2): channel optima differ by
    language. Python additionally wants string_values + field_names
    (stringly-typed: literals and attribute names are API identity there;

@@ -12,6 +12,7 @@ type meta = {
   line_start : int;
   line_end : int;
   code_lines : int; (* lines carrying code tokens (no comments/docstrings) *)
+  is_test : bool; (* under #[cfg(test)]/#[test], or a test-shaped path *)
 }
 
 type hit = {
@@ -53,12 +54,19 @@ val refresh_file :
 val size : t -> int
 val get_meta : t -> int -> meta
 
+val path_match :
+  include_paths:string list -> exclude_paths:string list -> string -> bool
+(** A path passes when it contains some include substring (or there are
+    none) and no exclude substring; case-insensitive. The one path-scope
+    rule, shared by the tool filters and the workspace config. *)
+
 (* Post-scan gates for the single-query ranking (find_similar / query_similar),
    mirroring [dup_filter]. Applied to each candidate match: [q_by_max] gates the
    threshold on max(j,c) (default) vs jaccard; [q_name_sub] / the path lists gate
    the match's name and file; [q_min_lines]/[q_min_features] gate the match's own
    size; [q_scope]>0 restricts matches to the index prefix [0,q_scope) (workspace
-   fns index first → "my code only"), <=0 = whole corpus. *)
+   fns index first → "my code only"), <=0 = whole corpus; [q_include_tests]
+   false drops matches flagged as test code. *)
 type query_filter = {
   q_by_max : bool;
   q_name_sub : string;
@@ -67,7 +75,11 @@ type query_filter = {
   q_min_lines : int;
   q_min_features : int;
   q_scope : int;
+  q_include_tests : bool;
 }
+
+val query_pass_all : query_filter
+(** No gating at all (the default for [query]). *)
 
 val query :
   ?exclude:int ->
@@ -101,10 +113,20 @@ type dup_filter = {
   limit : int; (* cap on results sorted by jaccard desc (<=0 = all) *)
   scope_a : int; (* restrict pair's 1st side to index prefix [0,scope_a) (<=0 = all) *)
   scope_b : int; (* restrict pair's 2nd side likewise — workspace fns index first *)
+  include_tests : bool; (* keep pairs with a test-code side (default false) *)
 }
 
 val default_filter : dup_filter
 val duplicates_filtered : t -> dup_filter -> pair list
+
+(* A scan that can be stopped: [should_stop] is polled once per outer-loop
+   function; when it fires, the pairs found so far come back with
+   [complete = false] and [scanned] < [total]. Scoping ([scope_a]/[scope_b])
+   bounds candidate generation itself, not just the result, so a
+   workspace-only scan costs the same whether or not deps are indexed. *)
+type scan = { pairs : pair list; scanned : int; total : int; complete : bool }
+
+val duplicates_scan : ?should_stop:(unit -> bool) -> t -> dup_filter -> scan
 
 val duplicates_full : t -> threshold:float -> pair list
 (** Unfiltered max(j,c)-gated feed for the explorer. *)

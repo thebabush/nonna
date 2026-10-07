@@ -1,0 +1,2 @@
+# nonna workspace config (opt-in marker; see README)
+exclude = vendor/, bench-py/, bench-out/, viz-out/

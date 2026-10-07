@@ -63,7 +63,11 @@ nonna lsp                                  # stdio LSP (diagnostics, find-simila
 nonna mcp [root]                           # stdio MCP (per-session)
 nonna serve [root] [-p 8976]               # HTTP MCP + duplication explorer UI
 
-# global flags: --profile structural|full, --iters N, --with ch1,ch2
+# global flags: --profile structural|full, --literals, --iters N, --with ch1,ch2
+#   --literals: also hash literal values (like BSim's constant option), so
+#   match tables / wrappers that differ only in constants stop scoring 1.0
+# dupes: test code (#[cfg(test)], #[test], test files/dirs) is skipped
+#   unless --tests; --min-lines/--min-features drop one-line closures
 ```
 
 ## 🤖 Agent integration (MCP)
@@ -80,12 +84,24 @@ Tools: `find_similar` (drafted code → ranked existing fns with source),
 `query_similar` (file + line|name), `diff_functions` (A∩B scores + per-side
 unique regions by source line — for a bug/fix pair, A−B ≈ bug, B−A ≈ fix),
 `find_duplicates` (workspace clone pairs, no query fn — the dedup/refactor
-view, with threshold/metric/name/include-exclude-path/size filters), `status`. The server's
-`instructions` explain score semantics to the agent
-(jaccard ≈ 1: same up to renaming; containment ≈ 1: "it does everything yours
-does, plus more").
+view, with threshold/metric/name/include-exclude-path/size filters and a
+`time_budget_s` that returns partial results instead of hanging), `status`.
+Every tool skips test code unless `include_tests` is set. Long calls honour
+MCP `notifications/cancelled`. The server's `instructions` explain score
+semantics to the agent (jaccard ≈ 1: same up to renaming; containment ≈ 1:
+"it does everything yours does, plus more").
 
-Create a `.nonna` file at the workspace root to enable MCP indexing. The
+Create a `.nonna` file at the workspace root to enable MCP indexing. It may
+also hold per-workspace config, one `key = value` per line:
+
+```
+literals = true           # hash literal values too (default false; see --literals)
+profile = full            # structural (default) | full
+exclude = vendor/, bench/ # path substrings to leave out of the workspace index
+include = crates/, src/   # or: only index files whose path contains one of these
+```
+
+The
 corpus root is indexed at startup (workspace plus cargo deps + std
 from per-`crate@version` caches under `~/.cache/nonna/sigdb` — first dep index
 ~1 min, warm loads < 0.5 s). Check `status` before trusting empty results.

@@ -20,6 +20,7 @@ type meta = {
   line_start : int;
   line_end : int;
   code_lines : int;
+  is_test : bool; (* under #[cfg(test)] / #[test], or a test-shaped path *)
 }
 
 type hit = {
@@ -46,6 +47,9 @@ type builder = {
 
 let create () = { b_postings = Hashtbl.create 4096; b_sigs = [||]; b_n = 0 }
 
+(* Fids are assigned in insertion order, so every posting list is sorted
+   ascending — [candidates] relies on that to bound a scan to an index prefix
+   without touching the rest of the list. *)
 let add (b : builder) (meta : meta) (sg : Signature.t) : int =
   let fid = b.b_n in
   if fid >= Array.length b.b_sigs then (
@@ -104,8 +108,9 @@ let get_meta (t : t) (fid : int) : meta =
   m
 
 (* Features with df above this don't generate candidates (they still score).
-   Scales with corpus size; never bites on small corpora. *)
-let df_cutoff (t : t) : int = max 100 (size t / 50)
+   Scales with the size of the corpus being SEARCHED; never bites on small
+   corpora. *)
+let df_cutoff_for (n : int) : int = max 100 (n / 50)
 
 (* Always probe at least this many of the query's RAREST features, even when
    they exceed the cutoff: a common-shaped function can have every feature
@@ -113,20 +118,51 @@ let df_cutoff (t : t) : int = max 100 (size t / 50)
    rarest features are the cheapest postings to scan anyway. *)
 let probe_rarest = 8
 
-let candidates (t : t) (sg : Signature.t) : int list =
-  let cutoff = df_cutoff t in
+(* Number of fids below [max_fid] in a sorted posting list: the feature's
+   document frequency within the index prefix [0, max_fid). *)
+let prefix_len (d : int array) (max_fid : int) : int =
+  let lo = ref 0 and hi = ref (Array.length d) in
+  while !lo < !hi do
+    let mid = (!lo + !hi) / 2 in
+    if d.(mid) < max_fid then lo := mid + 1 else hi := mid
+  done;
+  !lo
+
+(* [max_fid] restricts generation to the index prefix [0, max_fid) — the
+   workspace, when deps/std are indexed after it. The restriction has to
+   happen HERE, not by filtering the result: the server indexes hundreds of
+   thousands of dep functions behind a few thousand workspace ones, and an
+   unscoped probe walks every dep posting (and sizes the df cutoff off the
+   whole corpus) only to throw the dep fids away. Measured: a workspace-only
+   dupe scan over 5.3k fns with 337k dep fns behind them took 120s unscoped.
+   Scoped, df and the cutoff are computed over the prefix alone, so the
+   result is exactly what a workspace-only index would produce. *)
+let candidates ?max_fid (t : t) (sg : Signature.t) : int list =
+  let n = size t in
+  let bound =
+    match max_fid with Some m when m > 0 && m < n -> m | _ -> n
+  in
+  let cutoff = df_cutoff_for bound in
   let seen = Hashtbl.create 256 in
-  let addp d = Array.iter (fun fid -> Hashtbl.replace seen fid ()) d in
+  let addp (len, d) =
+    for i = 0 to len - 1 do
+      Hashtbl.replace seen d.(i) ()
+    done
+  in
   let by_df =
     sg.Signature.raw |> Array.to_list
     |> List.filter_map (fun h ->
            match Hashtbl.find_opt t.postings h with
-           | Some d -> Some (Array.length d, d)
+           | Some d ->
+               let len =
+                 if bound = n then Array.length d else prefix_len d bound
+               in
+               if len = 0 then None else Some (len, d)
            | None -> None)
     |> List.sort (fun (a, _) (b, _) -> compare a b)
   in
   List.iteri
-    (fun i (df, d) -> if i < probe_rarest || df <= cutoff then addp d)
+    (fun i (df, d) -> if i < probe_rarest || df <= cutoff then addp (df, d))
     by_df;
   Hashtbl.fold (fun fid () acc -> fid :: acc) seen []
 
@@ -154,7 +190,8 @@ let path_match ~(include_paths : string list) ~(exclude_paths : string list)
    vs jaccard); [q_name_sub] matches the match's name (""=off); the paths gate
    its file; [q_min_lines]/[q_min_features] gate the match's own size; [q_scope]
    <=0 ranks the whole corpus, >0 restricts matches to the index prefix
-   [0,q_scope) (workspace fns index first, so the workspace count = "my code"). *)
+   [0,q_scope) (workspace fns index first, so the workspace count = "my code");
+   [q_include_tests] false drops matches flagged as test code. *)
 type query_filter = {
   q_by_max : bool;
   q_name_sub : string;
@@ -163,6 +200,7 @@ type query_filter = {
   q_min_lines : int;
   q_min_features : int;
   q_scope : int;
+  q_include_tests : bool;
 }
 
 let query_pass_all =
@@ -174,6 +212,7 @@ let query_pass_all =
     q_min_lines = 0;
     q_min_features = 0;
     q_scope = 0;
+    q_include_tests = true;
   }
 
 (* Query with an externally-extracted signature. `exclude` skips a fid
@@ -185,12 +224,13 @@ let query ?(exclude = -1) ?(accept = fun (_ : meta) -> true)
   let smax =
     if filter.q_scope > 0 then min filter.q_scope (size t) else size t
   in
-  candidates t qsig
+  candidates ~max_fid:smax t qsig
   |> List.filter_map (fun fid ->
          if fid = exclude || fid >= smax then None
          else
            let sg, meta = t.sigs.(fid) in
-           if not (accept meta) then None
+           if (not (accept meta)) || (meta.is_test && not filter.q_include_tests)
+           then None
            else
              let j = Signature.jaccard qsig sg in
              let c = Signature.containment ~query:qsig sg in
@@ -226,7 +266,9 @@ type pair = {
    [name_sub] matches EITHER side (""=off); [include_paths]/[exclude_paths] gate
    each file (see [path_ok]); [min_lines]/[min_features] gate the SMALLER side;
    [limit]<=0 = unbounded. [by_max] picks the score the threshold gates on —
-   max(j,c) (the "call it instead" signal) or jaccard. *)
+   max(j,c) (the "call it instead" signal) or jaccard. [include_tests] false
+   drops every pair with a test-code side (the default: measured 91% of all
+   pairs on a mid-size Rust workspace sat inside #[cfg(test)] modules). *)
 type dup_filter = {
   threshold : float;
   by_max : bool;
@@ -238,6 +280,7 @@ type dup_filter = {
   limit : int;
   scope_a : int;
   scope_b : int;
+  include_tests : bool;
 }
 
 let default_filter =
@@ -252,6 +295,7 @@ let default_filter =
     limit = 0;
     scope_a = 0;
     scope_b = 0;
+    include_tests = false;
   }
 
 (* A file passes the path scope if it matches some include (or there are none)
@@ -262,7 +306,13 @@ let path_ok (flt : dup_filter) (file : string) : bool =
   path_match ~include_paths:flt.include_paths ~exclude_paths:flt.exclude_paths
     file
 
-let duplicates_filtered (t : t) (flt : dup_filter) : pair list =
+(* Outcome of a whole-corpus scan. [scanned] is how far the outer (a-side)
+   loop got out of [total]; [complete] is false when [should_stop] cut the
+   scan short — the pairs found so far are valid, just not exhaustive. *)
+type scan = { pairs : pair list; scanned : int; total : int; complete : bool }
+
+let duplicates_scan ?(should_stop = fun () -> false) (t : t)
+    (flt : dup_filter) : scan =
   let seen = Hashtbl.create 256 in
   let out = ref [] in
   (* Bound each side of a pair to an index prefix (<=0 = whole corpus). The
@@ -271,38 +321,63 @@ let duplicates_filtered (t : t) (flt : dup_filter) : pair list =
      — the difference between O(workspace) and O(workspace+deps+std). *)
   let bound n = if n > 0 then min n (size t) else size t in
   let amax = bound flt.scope_a and bmax = bound flt.scope_b in
-  for fid = 0 to amax - 1 do
-    let sg, meta = t.sigs.(fid) in
-    candidates t sg
-    |> List.iter (fun cand ->
-           if cand <> fid && cand < bmax then (
-             let key = (min fid cand, max fid cand) in
-             if not (Hashtbl.mem seen key) then (
-               Hashtbl.replace seen key ();
-               let csg, cmeta = t.sigs.(cand) in
-               if not (nests meta cmeta) then
-                 let af = Signature.size sg and bf = Signature.size csg in
-                 let j = Signature.jaccard sg csg in
-                 let c =
-                   Float.max
-                     (Signature.containment ~query:sg csg)
-                     (Signature.containment ~query:csg sg)
-                 in
-                 let score = if flt.by_max then Float.max j c else j in
-                 if
-                   score >= flt.threshold
-                   && min meta.code_lines cmeta.code_lines >= flt.min_lines
-                   && min af bf >= flt.min_features
-                   && (contains_ci ~sub:flt.name_sub meta.name
-                      || contains_ci ~sub:flt.name_sub cmeta.name)
-                   && path_ok flt meta.file && path_ok flt cmeta.file
-                 then
-                   out :=
-                     { a = meta; b = cmeta; a_features = af; b_features = bf; j; c }
-                     :: !out)))
+  (* per-side gates that sink every pair the side is in — checked before any
+     candidate generation or scoring *)
+  let side_ok (m : meta) =
+    (flt.include_tests || not m.is_test) && path_ok flt m.file
+  in
+  let fid = ref 0 in
+  let stopped = ref false in
+  while !fid < amax && not !stopped do
+    if should_stop () then stopped := true
+    else (
+      let a = !fid in
+      let sg, meta = t.sigs.(a) in
+      (if side_ok meta then
+         candidates ~max_fid:bmax t sg
+         |> List.iter (fun cand ->
+                if cand <> a && cand < bmax then (
+                  let key = (min a cand, max a cand) in
+                  if not (Hashtbl.mem seen key) then (
+                    Hashtbl.replace seen key ();
+                    let csg, cmeta = t.sigs.(cand) in
+                    if (not (nests meta cmeta)) && side_ok cmeta then
+                      let af = Signature.size sg and bf = Signature.size csg in
+                      if
+                        min meta.code_lines cmeta.code_lines >= flt.min_lines
+                        && min af bf >= flt.min_features
+                        && (contains_ci ~sub:flt.name_sub meta.name
+                           || contains_ci ~sub:flt.name_sub cmeta.name)
+                      then
+                        let j = Signature.jaccard sg csg in
+                        let c =
+                          Float.max
+                            (Signature.containment ~query:sg csg)
+                            (Signature.containment ~query:csg sg)
+                        in
+                        let score = if flt.by_max then Float.max j c else j in
+                        if score >= flt.threshold then
+                          out :=
+                            {
+                              a = meta;
+                              b = cmeta;
+                              a_features = af;
+                              b_features = bf;
+                              j;
+                              c;
+                            }
+                            :: !out))));
+      incr fid)
   done;
   let sorted = List.sort (fun (p : pair) (q : pair) -> compare q.j p.j) !out in
-  if flt.limit > 0 then List.filteri (fun i _ -> i < flt.limit) sorted else sorted
+  let pairs =
+    if flt.limit > 0 then List.filteri (fun i _ -> i < flt.limit) sorted
+    else sorted
+  in
+  { pairs; scanned = !fid; total = amax; complete = not !stopped }
+
+let duplicates_filtered (t : t) (flt : dup_filter) : pair list =
+  (duplicates_scan t flt).pairs
 
 (* The explorer feed: max(j,c)-gated, unfiltered, all pairs. *)
 let duplicates_full (t : t) ~(threshold : float) : pair list =

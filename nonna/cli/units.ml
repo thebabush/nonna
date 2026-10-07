@@ -13,6 +13,7 @@ type unit_info = {
   ucode_lines : int; (* lines carrying code tokens; comments/docstrings out *)
   ucfg : IL.fun_cfg;
   utokens : string list; (* body token contents (comment/ws-free) *)
+  utest : bool; (* test code — see [is_test_path] / [test_ranges] *)
 }
 
 let entity_name (ent_opt : G.entity option) : string =
@@ -129,6 +130,93 @@ let normalize_ocaml (ast : G.program) : G.program =
   in
   List.map (fun st -> v#visit_stmt () st) ast
 
+(* ── Test code ─────────────────────────────────────────────────────────────
+   Test code duplicates itself by nature: one assertion-shaped body per case,
+   differing only in literals, plus repeated fixtures and setup. Measured on a
+   mid-size Rust workspace, 91% of all dupe pairs (22,339 of 24,543) sat
+   inside #[cfg(test)] modules. Units are flagged here, once, so every
+   consumer (dupe scans, ranking, LSP diagnostics) can drop them by default.
+   Two signals, OR-ed:
+   - attributes (Rust): the unit sits under a definition carrying
+     #[cfg(test)] (the `mod tests` idiom — nesting, not just the fn's own
+     attrs), or carries #[test] / #[tokio::test] / #[cfg(test)] itself.
+     cfg(not(test)) is not test code.
+   - path: a test/tests/__tests__ directory component, or a test-shaped
+     basename: test_*.py, *_test.go, *.test.ts, *.spec.js, tests.rs, ... *)
+
+let is_test_path (file : string) : bool =
+  let stem = Filename.remove_extension (Filename.basename file) in
+  List.exists
+    (fun d -> d = "test" || d = "tests" || d = "__tests__")
+    (String.split_on_char '/' (Filename.dirname file))
+  || stem = "test" || stem = "tests"
+  || String.starts_with ~prefix:"test_" stem
+  || List.exists
+       (fun suffix -> String.ends_with ~suffix stem)
+       [ "_test"; "_tests"; ".test"; ".spec" ]
+
+let name_last (n : G.name) : string =
+  match n with
+  | G.Id ((s, _), _) -> s
+  | G.IdQualified { G.name_last = (s, _), _; _ } -> s
+
+let is_test_attr (a : G.attribute) : bool =
+  match a with
+  | G.NamedAttr (_, name, (_, args, _)) -> (
+      match name_last name with
+      | "test" -> true (* #[test], #[tokio::test], #[rstest::test], ... *)
+      | "cfg" ->
+          (* cfg(test), cfg(all(test, ..)), cfg(any(.., test)); never not(test).
+             The parser hands cfg's token tree over as expressions when it can
+             and as a raw token bag otherwise — accept both. *)
+          let rec mentions_test (e : G.expr) =
+            match e.G.e with
+            | G.N (G.Id (("test", _), _)) -> true
+            | G.Call
+                ( { G.e = G.N (G.Id ((("all" | "any"), _), _)); _ },
+                  (_, inner, _) ) ->
+                args_mention inner
+            | _ -> false
+          and args_mention args =
+            List.exists
+              (function
+                | G.Arg e -> mentions_test e
+                | G.OtherArg (_, anys) ->
+                    let toks =
+                      List.concat_map
+                        (fun any ->
+                          AST_generic_helpers.ii_of_any any
+                          |> List.map Tok.content_of_tok)
+                        anys
+                    in
+                    List.mem "test" toks && not (List.mem "not" toks)
+                | _ -> false)
+              args
+          in
+          args_mention args
+      | _ -> false)
+  | _ -> false
+
+(* Line ranges of every definition carrying a test attribute (a `mod tests`
+   spans all its functions; a `#[test] fn` spans itself). *)
+let test_ranges (ast : G.program) : (int * int) list =
+  let ranges = ref [] in
+  let v =
+    object
+      inherit [_] G.iter_no_id_info as super
+
+      method! visit_definition env ((ent, _) as def) =
+        (if List.exists is_test_attr ent.G.attrs then
+           match AST_generic_helpers.range_of_any_opt (G.Def def) with
+           | Some (l1, l2) ->
+               ranges := (l1.Tok.pos.Pos.line, l2.Tok.pos.Pos.line) :: !ranges
+           | None -> ());
+        super#visit_definition env def
+    end
+  in
+  v#visit_program () ast;
+  !ranges
+
 let units_of_file (file : string) : unit_info list =
   let file = try Unix.realpath file with _ -> file in
   let path = Fpath.v file in
@@ -136,6 +224,8 @@ let units_of_file (file : string) : unit_info list =
   let lang = Lang.lang_of_filename_exn path in
   let ast = if lang = Lang.Ocaml then normalize_ocaml ast else ast in
   Naming_AST.resolve lang ast;
+  let path_is_test = is_test_path file in
+  let test_ranges = test_ranges ast in
   (* Mark trailing expressions as returning, so expression-bodied fns (the
      Rust default) get NReturn nodes in the IL. AST_to_IL only consumes the
      flag; without this pass there are no return nodes at all. *)
@@ -163,6 +253,11 @@ let units_of_file (file : string) : unit_info list =
               ucode_lines = code_lines_of_body body_stmt;
               ucfg = fcfg;
               utokens = Nonna_features.Il_util.token_strings_of_any body_any;
+              utest =
+                path_is_test
+                || List.exists
+                     (fun (a, b) -> a <= line_start && line_start <= b)
+                     test_ranges;
             }
             :: !units
       | exception e ->
@@ -270,6 +365,7 @@ let meta_of (u : unit_info) : Engine.meta =
     line_start = u.uline_start;
     line_end = u.uline_end;
     code_lines = u.ucode_lines;
+    is_test = u.utest;
   }
 
 let is_lambda (u : unit_info) : bool =
@@ -302,7 +398,9 @@ let units_of_text ~(path : string) (text : string) : unit_info list =
       Fun.protect
         ~finally:(fun () -> close_out_noerr oc)
         (fun () -> output_string oc text);
-      units_of_file tmp |> List.map (fun u -> { u with ufile = path }))
+      units_of_file tmp
+      |> List.map (fun u ->
+             { u with ufile = path; utest = u.utest || is_test_path path }))
 
 (* 1-based inclusive line slice of a file. *)
 let file_slice (path : string) (first : int) (last : int) : string list =

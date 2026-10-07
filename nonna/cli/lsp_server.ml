@@ -170,6 +170,7 @@ let diagnostics_for (uri : string) : J.t list =
          if
            Signature.size sg < diag_min_features
            || u.Units.ucode_lines < diag_min_lines
+           || u.Units.utest (* test cases are near-dupes of each other by design *)
          then None
          else
            let self_m = Units.meta_of u in
@@ -184,6 +185,7 @@ let diagnostics_for (uri : string) : J.t list =
                  q_min_lines = diag_min_lines;
                  q_min_features = diag_min_features;
                  q_scope = 0;
+                 q_include_tests = false;
                }
            |> function
            | [] -> None
