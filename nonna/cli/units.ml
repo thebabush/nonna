@@ -342,8 +342,9 @@ let source_files_of_paths (paths : string list) : string list =
   List.iter (fun p -> walk (try Unix.realpath p with _ -> p)) paths;
   List.rev !out
 
-let units_of_paths (paths : string list) : unit_info list =
-  source_files_of_paths paths
+(* Units of each file; a file that fails to parse is skipped with a warning. *)
+let units_of_files (files : string list) : unit_info list =
+  files
   |> List.concat_map (fun f ->
          try units_of_file f
          with e ->
@@ -351,11 +352,19 @@ let units_of_paths (paths : string list) : unit_info list =
              (Printexc.to_string e);
            [])
 
+let units_of_paths (paths : string list) : unit_info list =
+  units_of_files (source_files_of_paths paths)
+
 let loc_str (u : unit_info) =
   Printf.sprintf "%s:%d-%d" u.ufile u.uline_start u.uline_end
 
 (* Units below this many features are too small to match meaningfully. *)
 let min_features = 5
+
+(* A unit's signature, or None when it is too small to match. *)
+let signature (u : unit_info) : Signature.t option =
+  let sg = Signature.extract ~lang:u.ulang u.ucfg in
+  if Signature.size sg < min_features then None else Some sg
 
 (* The one place an Engine.meta is built from a unit. *)
 let meta_of (u : unit_info) : Engine.meta =
@@ -422,10 +431,10 @@ let index_units (units : unit_info list) :
   let kept =
     units
     |> List.filter_map (fun u ->
-           let sg = Signature.extract ~lang:u.ulang u.ucfg in
-           if Signature.size sg < min_features then None
-           else (
-             ignore (Engine.add b (meta_of u) sg);
-             Some (u, sg)))
+           Option.map
+             (fun sg ->
+               ignore (Engine.add b (meta_of u) sg);
+               (u, sg))
+             (signature u))
   in
   (Engine.freeze b, kept)

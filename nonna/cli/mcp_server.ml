@@ -309,12 +309,12 @@ let hit_block (h : Engine.hit) : string =
 
 let query_unit (u : Units.unit_info) ~(threshold : float) ~(top_k : int)
     ~(filter : Engine.query_filter) : Engine.hit list =
-  let sg = Signature.extract ~lang:u.Units.ulang u.Units.ucfg in
-  if Signature.size sg < Units.min_features then []
-  else
-    let self_m = Units.meta_of u in
-    Engine.query !engine sg ~threshold ~max_results:top_k ~filter
-      ~accept:(fun m -> not (Engine.nests self_m m))
+  match Units.signature u with
+  | None -> []
+  | Some sg ->
+      let self_m = Units.meta_of u in
+      Engine.query !engine sg ~threshold ~max_results:top_k ~filter
+        ~accept:(fun m -> not (Engine.nests self_m m))
 
 let hits_text (label : string) ~(filter : Engine.query_filter)
     (hits : Engine.hit list) : string =

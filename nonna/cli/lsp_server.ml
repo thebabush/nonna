@@ -85,12 +85,8 @@ let changes : (string, (Engine.meta * Signature.t) list) Hashtbl.t =
 let republish_open : (unit -> unit) ref = ref (fun () -> ())
 
 let entries units =
-  List.filter_map
-    (fun (u : Units.unit_info) ->
-      let sg = Signature.extract ~lang:u.ulang u.ucfg in
-      if Signature.size sg < Units.min_features then None
-      else Some (Units.meta_of u, sg))
-    units
+  Corpus.entries_of_units units
+  |> List.map (fun (e : Sigdb.entry) -> (e.Sigdb.meta, e.Sigdb.sg))
 
 let disk_units path = try Units.units_of_file path with _ -> []
 

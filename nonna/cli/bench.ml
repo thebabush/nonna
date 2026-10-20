@@ -431,11 +431,13 @@ let rank ?(ranks_out : string option) (pairs_file : string)
   let sig_of : (int, Signature.t) Hashtbl.t = Hashtbl.create 8192 in
   Units.units_of_paths corpus_paths
   |> List.iter (fun (u : Units.unit_info) ->
-         let sg = Signature.extract ~lang:u.Units.ulang u.Units.ucfg in
-         if Signature.size sg >= Units.min_features then (
-           let fid = Engine.add bld (Units.meta_of u) sg in
-           Hashtbl.replace fid_of (canon u.Units.ufile, u.Units.uline_start) fid;
-           Hashtbl.replace sig_of fid sg))
+         Units.signature u
+         |> Option.iter (fun sg ->
+                let fid = Engine.add bld (Units.meta_of u) sg in
+                Hashtbl.replace fid_of
+                  (canon u.Units.ufile, u.Units.uline_start)
+                  fid;
+                Hashtbl.replace sig_of fid sg))
   |> ignore;
   let eng = Engine.freeze bld in
   Printf.eprintf "rank: corpus indexed (%d units)\n%!" (Engine.size eng);
