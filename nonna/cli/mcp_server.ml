@@ -53,67 +53,18 @@ let workspace_test_fns = ref 0 (* of [workspace_fns], flagged as test code *)
 let dep_count = ref 0
 let dep_fns = ref 0
 
-(* Opt-in gate: nonna only indexes a workspace that explicitly enables it with a
-   `.nonna` marker file at the root. Registered at user scope, the server is
-   spawned in every repo; without this gate it would index them all. *)
-let marker_name = ".nonna"
+(* the root has a .nonna marker (opt-in gate, see Workspace.marker_name) *)
 let enabled = ref false
-
-(* Workspace path scope from .nonna: a file is indexed when it matches some
-   `include` substring (or there are none) and no `exclude` substring — the
-   same case-insensitive substring semantics as the tool filters. Without it
-   a repo that vendors a parser or keeps benchmark corpora indexes all of it
-   as "my code": nonna-v2 itself came out at 96k functions, 114s to index and
-   126s per dupe scan, every top pair two versions of the same vendored
-   package; scoped to its own sources it is a few thousand. *)
-let workspace_include : string list ref = ref []
-let workspace_exclude : string list ref = ref []
-
-let workspace_file_ok (file : string) : bool =
-  Engine.path_match ~include_paths:!workspace_include
-    ~exclude_paths:!workspace_exclude file
-
-let workspace_files (roots : string list) : string list =
-  Units.source_files_of_paths roots |> List.filter workspace_file_ok
-
-(* The marker doubles as per-workspace config: `key = value` lines, `#`
-   comments. Keys: literals = true|false (see Dfg.set_literals), profile =
-   structural|full, include / exclude = comma-separated path substrings (see
-   [workspace_file_ok]). Anything else is ignored. Applied before indexing,
-   so the settings shape the index itself (and the literals one is part of
-   the sigdb profile tag). *)
-let apply_marker_config (path : string) : unit =
-  let csv v =
-    String.split_on_char ',' v |> List.map String.trim
-    |> List.filter (fun s -> s <> "")
-  in
-  Units.file_slice path 1 max_int
-  |> List.iter (fun line ->
-         match String.index_opt line '#' with
-         | Some 0 -> ()
-         | _ -> (
-             match String.split_on_char '=' line with
-             | [ k; v ] -> (
-                 match (String.trim k, String.trim v) with
-                 | "literals", ("true" | "on" | "1") -> Dfg.set_literals true
-                 | "literals", ("false" | "off" | "0") -> Dfg.set_literals false
-                 | "profile", "full" ->
-                     Signature.default_profile := Signature.full_profile
-                 | "profile", "structural" ->
-                     Signature.default_profile := Signature.structural_profile
-                 | "include", v -> workspace_include := csv v
-                 | "exclude", v -> workspace_exclude := csv v
-                 | _ -> ())
-             | _ -> ()))
 
 let literals_desc () : string =
   if Dfg.literals_on () then
     "on (string/float/int literal values are hashed: functions differing \
      only in constants do not match)"
   else
-    "off (literal values ignored: match tables and one-query wrappers that \
-     differ only in constants score 1.0; set `literals = true` in .nonna or \
-     start with --literals)"
+    "language defaults (integer values are hashed; Python, C and C++ also \
+     hash strings, Rust and OCaml hash string chunks. Set `literals = true` \
+     in .nonna or start with --literals to include string and float values \
+     in every language)"
 
 (* Tool dispatch, refreshes and explorer reads share one state boundary. *)
 let dispatch_mutex = Mutex.create ()
@@ -173,7 +124,7 @@ let workspace_stamp root deps =
          deps
   in
   let files =
-    workspace_files roots
+    Workspace.files roots
     @ List.concat_map
         (fun dir ->
           List.map (Filename.concat dir) [ "Cargo.toml"; "Cargo.lock" ])
@@ -187,7 +138,7 @@ let workspace_stamp root deps =
 
 let build_snapshot root deps =
   let stamp = workspace_stamp root deps in
-  let workspace = Corpus.index_files (workspace_files [ root ]) in
+  let workspace = Corpus.index_files (Workspace.files [ root ]) in
   let files = Hashtbl.create 256 in
   List.iter
     (fun (e : Sigdb.entry) -> Hashtbl.replace files e.meta.file ())
@@ -233,8 +184,9 @@ let refresh_workspace () =
 let index_async root =
   let root = try Unix.realpath root with _ -> root in
   index_root := root;
-  enabled := Sys.file_exists (Filename.concat root marker_name);
-  if !enabled then apply_marker_config (Filename.concat root marker_name);
+  let marker = Filename.concat root Workspace.marker_name in
+  enabled := Sys.file_exists marker;
+  if !enabled then Workspace.apply_marker_config marker;
   if not !enabled then indexing_done := true
   else
     ignore
@@ -796,7 +748,7 @@ let call_tool (name : string) (args : J.t) : J.t =
              "root: %s\nnonna is disabled here: no `%s` marker file at the \
               workspace root, so nothing is indexed. Create one (e.g. `touch \
               %s`) and restart the session to enable structural search."
-             !index_root marker_name marker_name)
+             !index_root Workspace.marker_name Workspace.marker_name)
       else
         tool_text
           (Printf.sprintf
@@ -812,7 +764,7 @@ let call_tool (name : string) (args : J.t) : J.t =
         (Printf.sprintf
            "nonna is disabled for %s: no `%s` marker file at the workspace \
             root. Create one (`touch %s`) and restart the session to enable it."
-           !index_root marker_name marker_name)
+           !index_root Workspace.marker_name Workspace.marker_name)
   | "find_similar" -> (
       match str_arg args "code" with
       | None -> tool_text ~is_error:true "missing required argument: code"
@@ -897,8 +849,8 @@ let instructions () =
        "hashed in this workspace (literals = true), so functions that differ \
         only in constants do not match."
      else
-       "ignored in this workspace (the default), so a match table or wrapper \
-        that differs only in constants scores 1.0 against its siblings.")
+       "use language defaults: integer values are hashed, and Rust, Python, \
+        C and C++ also hash strings; float values are ignored.")
   ^ " Reading scores: jaccard ≈ 1.0 means same function up to \
      renaming/formatting; containment ≈ 1.0 means the other function does \
      everything this one does (and possibly more) — a strong 'call it \

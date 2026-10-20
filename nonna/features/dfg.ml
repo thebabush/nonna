@@ -115,6 +115,10 @@ type cfg = {
   int_values : bool; (* integer/bool literal values (kinds always kept) *)
   float_values : bool; (* float literal values *)
   string_values : bool; (* string/char/regexp/atom literal values *)
+  string_chunks : bool;
+      (* string literals as set features, whole and in content-defined
+         chunks (Strings.chunks): an edited message keeps most of its
+         chunks, where a whole-string seed is simply lost *)
   ty_descrs : bool; (* declared-type descriptors (params / casts / new) *)
   param_pos : bool; (* parameter position in param seeds *)
   macro_tokens : bool; (* macro token bags (FixmeExp / FixmeInstr) *)
@@ -140,6 +144,7 @@ let structural_cfg =
     int_values = false;
     float_values = false;
     string_values = false;
+    string_chunks = false;
     ty_descrs = false;
     param_pos = false;
     macro_tokens = false;
@@ -154,6 +159,7 @@ let semantic_cfg =
     int_values = true;
     float_values = true;
     string_values = true;
+    string_chunks = false; (* a set channel, not a seed signal *)
     ty_descrs = true;
     param_pos = true;
     macro_tokens = true;
@@ -180,8 +186,9 @@ let base_cfg : cfg ref =
 
 (* The literal switch (cf. Ghidra BSim's constant-inclusion setting): fold
    string and float literal VALUES into every language's base hashes (ints
-   already are). Off by default because it costs recall on renamed/evolved
-   clones whose messages and formats drift; on, it separates the shapes that
+   already are). Per-language defaults already include strings where measured
+   useful; this switch additionally includes floats and strings everywhere.
+   It separates the shapes that
    rename invariance collapses — enum-to-string match tables, one-query DB
    wrappers, per-format accessors — which otherwise all score 1.0 against each
    other (measured on a 5k-fn Rust workspace: dupe pairs at 0.7 fell 15.2k ->
@@ -196,8 +203,12 @@ let literals_on () : bool =
 (* Per-language base (N8 sweeps, issue #2): channel optima differ by
    language. Python additionally wants string_values + field_names
    (stringly-typed: literals and attribute names are API identity there;
-   ALL MRR 0.955→0.969, evolved 0.862→0.929, samefile FPR halved) — the
-   same channels COST recall on Rust. Composed on top of the global
+   ALL MRR 0.955→0.969, evolved 0.862→0.929, samefile FPR halved).
+   Rust uses string chunks (2026-10-20, version-aware rank: evolved/renamed
+   ALL MRR 0.854 base, 0.869 chunks, 0.875 whole strings). Whole strings
+   measured slightly higher; chunks were chosen anyway because they keep
+   matching through edits to messages and formats.
+   Composed on top of the global
    base_cfg so --with ablations still apply everywhere. *)
 let base_cfg_for (lang : Lang.t) : cfg =
   let b = !base_cfg in
@@ -224,14 +235,17 @@ let base_cfg_for (lang : Lang.t) : cfg =
      top of exp. (An earlier n=37 single-lib pass had picked the C config; the
      larger judge corrected it — exp wins decisively at scale.)
      (OCaml IL itself is recovered by units.ml's normalize_ocaml AST pre-pass;
-     without it every OCaml body collapses to NTodo.) *)
-  | Lang.Ocaml -> { b with exp_nodes = true }
+     without it every OCaml body collapses to NTodo.)
+     String chunks as in Rust (2026-10-20, opengrep v1.20.0 vs v1.31.0, 275
+     evolved pairs): ranking flat (MRR 0.910 -> 0.911), same-file pairs at
+     max(j,c) >= 0.5 cut 10.1% -> 7.7%. *)
+  | Lang.Ocaml -> { b with string_chunks = true; exp_nodes = true }
   (* exp-nodes sweeps (2026-06): decomposed expression graphs at depth 2
      win the evolved kind on Rust (MRR 0.723->0.766, r@5 0.812->0.859) AND
      Python (0.929->0.950, r@5 0.964->0.986), everything else flat — an
      edit poisons k hops, not a whole collapsed tree. C measured a tie vs
      collapsed depth-0 (0.917 vs 0.918, better tail) and keeps collapsed. *)
-  | Lang.Rust -> { b with exp_nodes = true }
+  | Lang.Rust -> { b with string_chunks = true; exp_nodes = true }
   | _ -> b
 
 (* compact tag for cache keys / reports *)
@@ -246,6 +260,7 @@ let cfg_bits (c : cfg) : int =
   lor (if c.macro_tokens then 128 else 0)
   lor (if c.exp_nodes then 256 else 0)
   lor (if c.thru_copies then 512 else 0)
+  lor (if c.string_chunks then 1024 else 0)
 
 (* Recursively hash a side-effect-free exp; also collect the names it reads,
    in traversal order (these become DFG predecessor edges). *)

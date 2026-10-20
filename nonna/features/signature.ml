@@ -30,6 +30,14 @@ let dfg_weight (tag : Dfg.tag) : float =
   | None -> default_dfg_weight tag
 
 let misc_weight = 0.8
+
+(* string_chunks channel: whole strings and their chunks (overridable as
+   "string_set" / "string_chunks" via --weights, like the DFG tags) *)
+let override (name : string) (default : float) : float =
+  Option.value (Hashtbl.find_opt weight_overrides name) ~default
+
+let string_set_weight () = override "string_set" 0.5
+let string_chunk_weight () = override "string_chunks" 0.2
 let structural_weight = 0.3
 
 (* D14 — the BASELINE is name-free, value-free structural hashing. Names,
@@ -82,6 +90,11 @@ let extract ?(profile : profile option) ?(lang : Lang.t option)
        else [])
     @ (if p.w_floats > 0. then
          sem.Semantic.float_consts |> List.map (fun h -> (h, p.w_floats))
+       else [])
+    @ (if fc.Dfg.string_chunks then
+         (sem.Semantic.str_consts |> List.map (fun h -> (h, string_set_weight ())))
+         @ (sem.Semantic.str_chunks
+           |> List.map (fun h -> (h, string_chunk_weight ())))
        else [])
     @ (sem.Semantic.misc |> List.map (fun h -> (h, misc_weight)))
     @ (Structural.extract fcfg |> List.map (fun h -> (h, structural_weight)))

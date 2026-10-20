@@ -48,7 +48,8 @@ check "diff: hi-branch unique"    'hi'
 check "find_duplicates lists pairs" 'duplicate pair'
 check "find_duplicates excludes test code by default" 'test code and were excluded'
 check "find_similar min_lines gates" 'No similar function found for drafted `my_avg`'
-check "status reports literals off" 'literals: off'
+check "status reports language-default literals" 'literals: language defaults'
+check "status reports string chunks in Rust defaults" 'Rust and OCaml hash string chunks'
 
 # ── .nonna as config: literals = true flips the hashing profile ──────────────
 printf '# nonna workspace config\nliterals = true\n' > "$ROOT/.nonna"

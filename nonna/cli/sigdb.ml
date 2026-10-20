@@ -9,7 +9,7 @@ module Signature = Nonna_features.Signature
 
 (* bump on any change to hashing/features/weights, or to the [meta] record
    (Marshal is untyped: a reshaped record reads back as garbage, not an error) *)
-let format_version = 4
+let format_version = 5
 
 type entry = { meta : Engine.meta; sg : Signature.t }
 

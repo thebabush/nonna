@@ -113,6 +113,14 @@ let cache_dir () : string =
   mkdirs dir;
   dir
 
+(* Signatures of the units big enough to index. *)
+let entries_of_units (units : Units.unit_info list) : Sigdb.entry list =
+  units
+  |> List.filter_map (fun (u : Units.unit_info) ->
+         let sg = Signature.extract ~lang:u.Units.ulang u.Units.ucfg in
+         if Signature.size sg < Units.min_features then None
+         else Some { Sigdb.meta = Units.meta_of u; sg })
+
 (* Index an explicit file list (the workspace, after the .nonna path scope
    has been applied) or a whole directory (deps). *)
 let index_files (files : string list) : Sigdb.entry list =
@@ -123,10 +131,7 @@ let index_files (files : string list) : Sigdb.entry list =
            Printf.eprintf "warn: failed to parse %s: %s\n" f
              (Printexc.to_string e);
            [])
-  |> List.filter_map (fun (u : Units.unit_info) ->
-         let sg = Signature.extract ~lang:u.Units.ulang u.Units.ucfg in
-         if Signature.size sg < Units.min_features then None
-         else Some { Sigdb.meta = Units.meta_of u; sg })
+  |> entries_of_units
 
 let index_dir (dir : string) : Sigdb.entry list =
   index_files (Units.source_files_of_paths [ dir ])

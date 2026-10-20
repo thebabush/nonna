@@ -12,22 +12,6 @@ module JU = Yojson.Safe.Util
 module Engine = Nonna_index.Engine
 module Signature = Nonna_features.Signature
 
-(* report matches with max(jaccard, containment) above this *)
-let report_threshold = 0.7
-
-(* Diagnostics are advisory editor squiggles, so only flag structurally rich
-   functions. Trivial getters carry ~9 features and near-dupe each other at
-   1.00 (pure noise); real functions start ~15. This floor is deliberately
-   higher than the index-wide Units.min_features (5), which still governs the
-   CLI/MCP power-user paths — it gates BOTH the queried unit and its matches. *)
-let diag_min_features = 15
-
-(* [diag_min_features] counts every channel, and a one-line closure
-   (`|&t| key(&xs[t]) == k`) clears 15 on the non-dfg channels alone — then
-   near-dupes every other one-liner at 1.00. Real code has a few lines of it,
-   so gate BOTH sides on code lines as well. *)
-let diag_min_lines = 3
-
 (* ── Wire protocol ───────────────────────────────────────────────────────── *)
 
 let read_message () : J.t option =
@@ -166,28 +150,9 @@ let line_range (line0 : int) : J.t =
 let diagnostics_for (uri : string) : J.t list =
   document_units uri
   |> List.filter_map (fun (u : Units.unit_info) ->
-         let sg = Signature.extract ~lang:u.Units.ulang u.Units.ucfg in
-         if
-           Signature.size sg < diag_min_features
-           || u.Units.ucode_lines < diag_min_lines
-           || u.Units.utest (* test cases are near-dupes of each other by design *)
-         then None
-         else
-           let self_m = Units.meta_of u in
-           Engine.query !engine sg ~threshold:report_threshold ~max_results:5
-             ~accept:(fun m -> not (Engine.nests self_m m))
-             ~filter:
-               {
-                 Engine.q_by_max = true;
-                 q_name_sub = "";
-                 q_include_paths = [];
-                 q_exclude_paths = [];
-                 q_min_lines = diag_min_lines;
-                 q_min_features = diag_min_features;
-                 q_scope = 0;
-                 q_include_tests = false;
-               }
-           |> function
+         Check.matches !engine u
+           (Signature.extract ~lang:u.Units.ulang u.Units.ucfg)
+         |> function
            | [] -> None
            | best :: _ as hits ->
                let m = best.Engine.meta in

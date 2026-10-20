@@ -36,4 +36,28 @@ check "dupes: exactly one high-sim pair in fixtures" "[ \"\$DUPES\" = 1 ]"
 NOTESTS=$("$BIN" dupes tests/fixtures spike -t 0.9 | grep -c '<->')
 check "dupes: test-path units skipped by default" "[ \"\$NOTESTS\" = 0 ]"
 
+# check: a throwaway repo with util.rs committed; draft.rs's avg copies mean.
+ABS_BIN=$PWD/$BIN
+REPO=$(mktemp -d)
+mkdir "$REPO/src"
+cp tests/fixtures/corpus/util.rs "$REPO/src/util.rs"
+(cd "$REPO" && git init -q && git add -A &&
+  git -c user.name=t -c user.email=t@t commit -qm init)
+cp tests/fixtures/draft.rs "$REPO/src/draft.rs"
+CHECK=$(cd "$REPO" && "$ABS_BIN" check)
+check "check: untracked copy of mean reported" \
+  "echo \"\$CHECK\" | grep -A1 '^  avg ' | grep -q '~ mean '"
+CHECK=$(cd "$REPO" && "$ABS_BIN" check --staged)
+check "check --staged: unstaged files ignored" \
+  "echo \"\$CHECK\" | grep -q '^nonna: no changed function'"
+(cd "$REPO" && git add -A)
+(cd "$REPO" && "$ABS_BIN" check --staged --strict >/dev/null)
+check "check --staged --strict: exit 1 on a finding" "[ $? = 1 ]"
+(cd "$REPO" && git -c user.name=t -c user.email=t@t commit -qm draft &&
+  sed -i.bak 's/acc += item;/acc += item; \/\/ sum/' src/draft.rs && rm src/draft.rs.bak)
+CHECK=$(cd "$REPO" && "$ABS_BIN" check)
+check "check: a dupe from before the change stays quiet" \
+  "echo \"\$CHECK\" | grep -q '^nonna: no changed function resembles existing code (1 checked)'"
+rm -rf "$REPO"
+
 exit $fail

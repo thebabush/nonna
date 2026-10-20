@@ -24,6 +24,7 @@ let trivial_number (s : string) =
 type parts = {
   calls : Fhash.t list;
   str_consts : Fhash.t list;
+  str_chunks : Fhash.t list; (* content-defined chunks of the strings *)
   int_consts : Fhash.t list;
   float_consts : Fhash.t list;
   misc : Fhash.t list;
@@ -33,6 +34,7 @@ let extract_parts (fcfg : IL.fun_cfg) : parts =
   let nodes = Il_util.nodes_in_order fcfg.IL.cfg in
   let calls = ref [] in
   let strings = ref [] in
+  let chunks = ref [] in
   let ints = ref [] in
   let floats = ref [] in
   let returns = ref 0 in
@@ -83,7 +85,12 @@ let extract_parts (fcfg : IL.fun_cfg) : parts =
                        | ("string" | "char"), Some v ->
                            let f = feed_of 0xC0 in
                            Fhash.Feed.str f v;
-                           strings := Fhash.Feed.finish f :: !strings
+                           strings := Fhash.Feed.finish f :: !strings;
+                           Strings.chunks v
+                           |> List.iter (fun c ->
+                                  let f = feed_of 0xC5 in
+                                  Fhash.Feed.str f c;
+                                  chunks := Fhash.Feed.finish f :: !chunks)
                        | "int", Some v when not (trivial_number v) ->
                            let f = feed_of 0xC1 in
                            Fhash.Feed.str f v;
@@ -109,6 +116,7 @@ let extract_parts (fcfg : IL.fun_cfg) : parts =
   {
     calls = dedup !calls;
     str_consts = dedup !strings;
+    str_chunks = dedup !chunks;
     int_consts = dedup !ints;
     float_consts = dedup !floats;
     misc = [ param_count; return_pattern ];

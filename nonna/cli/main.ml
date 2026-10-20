@@ -6,6 +6,8 @@
  *                --min-lines/--min-features N, -n LIMIT, --tests (include test code)
  *   nonna query <corpus...> -- <draft.rs> [-t 0.25] [-k 5]
  *       reuse-before-write: for each fn in draft, top matches in corpus
+ *   nonna check [--staged | --base REF] [paths...] [--deps] [--strict]
+ *       changed fns (git) that resemble existing code — see check.ml
  *   nonna graph <file> [--fn NAME] [-o DIR]    DOT per propagation round
  *   nonna dump-il <file> [--fn NAME]           compact IL CFG
  *   nonna mine <paths...> [-o pairs.tsv]       mine ground-truth pairs
@@ -188,6 +190,10 @@ let parse_flags (args : string list) : string list * (string * string) list =
     | "--metric" :: v :: rest -> go pos (("metric", v) :: flags) rest
     | "--fn" :: v :: rest -> go pos (("fn", v) :: flags) rest
     | "--tests" :: rest -> go pos (("tests", "1") :: flags) rest
+    | "--staged" :: rest -> go pos (("staged", "1") :: flags) rest
+    | "--base" :: v :: rest -> go pos (("base", v) :: flags) rest
+    | "--deps" :: rest -> go pos (("deps", "1") :: flags) rest
+    | "--strict" :: rest -> go pos (("strict", "1") :: flags) rest
     | "--sample" :: v :: rest -> go pos (("sample", v) :: flags) rest
     | "--ext" :: v :: rest -> go pos (("ext", v) :: flags) rest
     | x :: rest -> go (x :: pos) flags rest
@@ -209,12 +215,14 @@ let usage () =
     \                            [--name SUB] [--include SUB,..] [--exclude SUB,..]\n\
     \                            [--min-lines N] [--min-features N] [--tests]\n\
     \  nonna query <corpus...> -- <draft.rs> [-t 0.25] [-k 5]\n\
+    \  nonna check [--staged | --base REF] [paths...] [-t 0.7] [--deps]\n\
+    \                            [--strict]\n\
     \  nonna graph <file> [--fn NAME] [-o DIR]   (DOT per propagation round)\n\
     \  nonna dump-il <file> [--fn NAME]          (compact IL CFG)\n\
     \  nonna parse-stats <paths...> [--sample N] [--ext .c]  (IL quality probe)\n\
     \  nonna mine <paths...> [-o pairs.tsv]      (ground-truth pair mining)\n\
     \  nonna eval <pairs.tsv> [-o scores.tsv]\n\
-    \  nonna rank <pairs.tsv> <corpus paths...>  (MRR / recall@k, end to end)\n\
+    \  nonna rank <pairs.tsv> <corpus paths...> [-o ranks.tsv]  (MRR / recall@k)\n\
     \  nonna lsp                                 (stdio LSP server)\n\
     \  nonna mcp [root]                          (stdio MCP server; index root)\n\
     \  nonna serve [root] [-p 8976]              (HTTP MCP server, shared warm index)\n\
@@ -265,6 +273,7 @@ let rec strip_profile acc = function
                | "int_values" -> { c with Dfg.int_values = true }
                | "float_values" -> { c with Dfg.float_values = true }
                | "string_values" -> { c with Dfg.string_values = true }
+               | "string_chunks" -> { c with Dfg.string_chunks = true }
                | "ty_descrs" -> { c with Dfg.ty_descrs = true }
                | "param_pos" -> { c with Dfg.param_pos = true }
                | "macro_tokens" -> { c with Dfg.macro_tokens = true }
@@ -332,6 +341,15 @@ let () =
             (flag flags "t" 0.25 float_of_string)
             (flag flags "k" 5 int_of_string)
       | _ -> usage ())
+  | "check" :: rest ->
+      let pos, flags = parse_flags rest in
+      Check.run
+        ~staged:(List.mem_assoc "staged" flags)
+        ~base:(List.assoc_opt "base" flags)
+        ~deps:(List.mem_assoc "deps" flags)
+        ~strict:(List.mem_assoc "strict" flags)
+        ~threshold:(flag flags "t" Check.threshold float_of_string)
+        pos
   | "mine" :: rest ->
       let pos, flags = parse_flags rest in
       if pos = [] then usage ();
@@ -342,9 +360,10 @@ let () =
       | [ pairs ] -> Bench.eval ?scores_out:(List.assoc_opt "o" flags) pairs
       | _ -> usage ())
   | "rank" :: rest -> (
-      let pos, _ = parse_flags rest in
+      let pos, flags = parse_flags rest in
       match pos with
-      | pairs :: corpus when corpus <> [] -> Bench.rank pairs corpus
+      | pairs :: corpus when corpus <> [] ->
+          Bench.rank ?ranks_out:(List.assoc_opt "o" flags) pairs corpus
       | _ -> usage ())
   | [ "lsp" ] -> Lsp_server.run ()
   | "mcp" :: rest -> (

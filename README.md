@@ -10,8 +10,9 @@
 [Opengrep](https://github.com/opengrep/opengrep)'s IL. It hashes each function's
 resolved control/data-flow graph into a feature set and scores pairs with
 weighted Jaccard and asymmetric containment. Matching is rename-invariant:
-variable names, field names, literals and concrete types are ignored by
-default — two functions match if they compute the same way.
+variable names and concrete types are ignored. Call names and integer values
+are retained; Rust and OCaml also hash string literals in content-defined chunks, so
+an edited message still partly matches. Other signal defaults vary by language.
 
 The primary loop is **reuse-before-write**: an agent drafts a function, asks
 `find_similar`, and learns "this already exists in dep X — call it instead",
@@ -45,6 +46,7 @@ embedding the parser must call `Parsing_init.init ()` (ours do).
 
 ```sh
 nonna query <corpus...> -- <draft.rs>      # find fns similar to each fn in draft
+nonna check [--staged | --base REF]        # changed fns that resemble existing code
 nonna dupes <dir> [-t 0.5]                 # intra-corpus clone pairs
 #   filters: --metric max|jaccard, --name SUB, --include/--exclude SUB,..,
 #            --min-lines/--min-features N, -n LIMIT
@@ -114,6 +116,55 @@ all similar pairs in the corpus with a threshold slider, name/file/min-size
 filters, and a keyboard-navigable side-by-side function diff — both a dedup
 navigator and a way to eyeball how the engine scores real code.
 
+## 🪝 Pre-commit
+
+`nonna check` finds the functions a git change adds or modifies and reports
+those that now resemble existing code, with a short note telling the agent
+(or person) committing how to read the scores:
+
+```
+nonna: 2 changed functions resemble existing code
+
+  avg  src/draft.rs:2-14  (added)
+    ~ mean  src/util.rs:1-13  jaccard 1.00  containment 1.00
+
+  floor_all  src/draft.rs:19-25  (added)
+    ~ clamp_all  src/util.rs:45-53  jaccard 0.74  containment 0.95
+
+Read the functions above before keeping this change. ...
+```
+
+Only new resemblances count: a modified function stays quiet about matches
+its previous version already had. It compares the working tree (plus
+untracked files) against `HEAD` by default; `--staged` checks what is about to
+be committed and `--base REF` checks a branch against its merge base. It uses
+the `.nonna` path scope when the file exists, gates on max(jaccard,
+containment) ≥ 0.7 (`-t`), and skips test code and trivial functions like the
+editor diagnostics. Only the workspace is indexed: `--deps` adds cargo deps +
+std, which takes long on big dependency trees. It always exits 0 unless
+`--strict` is given.
+
+As a plain git hook:
+
+```sh
+printf '#!/bin/sh\nexec nonna check --staged\n' > .git/hooks/pre-commit
+chmod +x .git/hooks/pre-commit
+```
+
+Or with [pre-commit](https://pre-commit.com), with `nonna` on `PATH`:
+
+```yaml
+repos:
+  - repo: local
+    hooks:
+      - id: nonna
+        name: nonna
+        entry: nonna check --staged
+        language: system
+        pass_filenames: false
+        verbose: true   # show the report even though the hook passes
+```
+
 ## 🧑‍💻 Editor integration (VSCode)
 
 `editor/vscode-nonna/` — diagnostics on open/edit/save ("`avg` is similar to `mean`
@@ -129,6 +180,7 @@ across open documents. Reindexing preserves edits received during the scan.
 
 ```sh
 bash tests/run.sh            # core regressions (fixtures)
+bash tests/rank.sh           # version-aware ranking regressions
 bash tests/sanity.sh         # 16 invariant assertions across Rust/Python/JS/Go
 bash tests/lsp-smoke.sh      # LSP protocol session
 bash tests/mcp-smoke.sh      # MCP stdio + HTTP session (incl. diff algebra)
@@ -138,8 +190,8 @@ bash tests/sweep.sh bench-out/paths.txt   # hyperparameter sweep (MRR/recall@k)
 uv run tests/llm_judge.py --pairs ... --scores ...   # LLM-judged pair quality
 ```
 
-Current headline numbers (rank MRR through the full pipeline; defaults are
-tuned per language and need no flags):
+Historical numbers (rank MRR with the old exact-B-only metric; Python/C
+reruns are pending). The corrected Rust comparison is in DESIGN.md:
 
 | benchmark                          | ALL   | exact | renamed | evolved MRR / r@5 |
 |------------------------------------|-------|-------|---------|-------------------|

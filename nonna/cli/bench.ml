@@ -404,15 +404,28 @@ let pct (sorted : float array) (p : float) : float =
 
 (* For every positive pair (a, b): index the WHOLE corpus, query with a
    through the real pipeline (inverted-index candidates -> max(jaccard,containment)
-   ranking), and find b's rank. Unlike pairwise eval this includes LSH
-   candidate-selection losses. Ties (e.g. exact dupes across versions) don't
-   count against b: rank = 1 + #strictly-better. *)
-let rank (pairs_file : string) (corpus_paths : string list) =
+   ranking), and find the best acceptable hit's rank. B itself and other
+   versions of either endpoint (crate + relative path + name) are acceptable.
+   Unlike pairwise eval this includes candidate-selection losses. Ties don't
+   count against the accepted hit: rank = 1 + #strictly-better. *)
+let rank ?(ranks_out : string option) (pairs_file : string)
+    (corpus_paths : string list) =
   let module Engine = Nonna_index.Engine in
+  (* per-pair rows for qualitative analysis: the pair, the target's rank and
+     scores, and the best-ranked hit (the competitor when rank > 1) *)
+  let rows_oc = Option.map open_out ranks_out in
   let pairs = read_pairs pairs_file in
   (* pairs.tsv paths may differ cosmetically from walked paths (double
      slashes, symlinks) — join on the canonical form *)
-  let canon (p : string) : string = try Unix.realpath p with _ -> p in
+  let canonical_paths = Hashtbl.create 1024 in
+  let canon (p : string) : string =
+    match Hashtbl.find_opt canonical_paths p with
+    | Some path -> path
+    | None ->
+        let path = try Unix.realpath p with _ -> p in
+        Hashtbl.add canonical_paths p path;
+        path
+  in
   let bld = Engine.create () in
   let fid_of : (string * int, int) Hashtbl.t = Hashtbl.create 8192 in
   let sig_of : (int, Signature.t) Hashtbl.t = Hashtbl.create 8192 in
@@ -438,6 +451,15 @@ let rank (pairs_file : string) (corpus_paths : string list) =
   let key (h : Engine.hit) =
     (Float.max h.Engine.jaccard h.Engine.containment, h.Engine.jaccard)
   in
+  (* This is a retrieval metric: either endpoint's version-independent
+     identity is relevant, including names repeated in different impls.
+     The miner's stricter uniqueness rule is only for labeling evolved pairs. *)
+  let identity (m : Engine.meta) =
+    let file = canon m.Engine.file in
+    let base, rel = crate_of file in
+    if base <> "" then Some (base, rel, m.Engine.name)
+    else None
+  in
   pairs
   |> List.iter (fun p ->
          if p.plabel = "pos" then
@@ -445,25 +467,60 @@ let rank (pairs_file : string) (corpus_paths : string list) =
              ( Hashtbl.find_opt fid_of (canon p.fa, p.la),
                Hashtbl.find_opt fid_of (canon p.fb, p.lb) )
            with
-           | Some fa, Some _ ->
+           | Some fa, Some fb ->
                let qsig = Hashtbl.find sig_of fa in
                let hits =
                  Engine.query ~exclude:fa eng qsig ~threshold:0.0
                    ~max_results:max_int
                in
-               let fb = canon p.fb in
-               let target (h : Engine.hit) =
-                 h.Engine.meta.Engine.file = fb
-                 && h.Engine.meta.Engine.line_start = p.lb
+               let ma = Engine.get_meta eng fa and mb = Engine.get_meta eng fb in
+               let ia = identity ma and ib = identity mb in
+               let other_version m endpoint id =
+                 canon m.Engine.file <> canon endpoint.Engine.file
+                 && id <> None && identity m = id
                in
-               (match List.find_opt target hits with
-               | None -> record p.pkind 0 (* not a candidate *)
-               | Some hb ->
-                   let kb = key hb in
-                   let better =
-                     List.length (List.filter (fun h -> key h > kb) hits)
+               let target (h : Engine.hit) =
+                 let m = h.Engine.meta in
+                 (canon m.Engine.file = canon mb.Engine.file
+                  && m.Engine.line_start = mb.Engine.line_start)
+                 || other_version m ma ia || other_version m mb ib
+               in
+               let r, tb =
+                 match List.find_opt target hits with
+                 | None -> (0, None) (* not a candidate *)
+                 | Some hb ->
+                     let kb = key hb in
+                     ( List.length (List.filter (fun h -> key h > kb) hits) + 1,
+                       Some hb )
+               in
+               record p.pkind r;
+               Option.iter
+                 (fun oc ->
+                   let score = function
+                     | Some (h : Engine.hit) ->
+                         Printf.sprintf "%.3f\t%.3f" h.Engine.jaccard
+                           h.Engine.containment
+                     | None -> "\t"
                    in
-                   record p.pkind (better + 1))
+                   let top =
+                     match hits with
+                     | h :: _ ->
+                         Printf.sprintf "%s\t%d\t%s\t%s" h.Engine.meta.Engine.file
+                           h.Engine.meta.Engine.line_start h.Engine.meta.Engine.name
+                           (score (Some h))
+                     | [] -> "\t\t\t\t"
+                   in
+                   let accepted =
+                     match tb with
+                     | Some h ->
+                         Printf.sprintf "%s\t%d\t%s" h.Engine.meta.Engine.file
+                           h.Engine.meta.Engine.line_start h.Engine.meta.Engine.name
+                     | None -> "\t\t"
+                   in
+                   Printf.fprintf oc "%s\t%s\t%d\t%s\t%d\t%s\t%d\t%s\t%s\t%s\n"
+                     p.pkind p.fa p.la p.fb p.lb (score tb) r top
+                     (if r = 1 then "" else "competitor") accepted)
+                 rows_oc
            | _ -> incr skipped);
 
   Printf.printf "ranked positives over a %d-unit corpus (%d skipped: \
@@ -502,7 +559,8 @@ let rank (pairs_file : string) (corpus_paths : string list) =
       0. rs
     /. nf
   in
-  Printf.printf "%-14s %6d %7.3f\n" "ALL" n mrr
+  Printf.printf "%-14s %6d %7.3f\n" "ALL" n mrr;
+  Option.iter close_out rows_oc
 
 let eval ?(scores_out : string option) (pairs_file : string) =
   let pairs = read_pairs pairs_file in

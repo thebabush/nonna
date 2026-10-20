@@ -161,8 +161,10 @@ binding in-switch; only collision rate matters), 62-bit non-negative ints.
   the full profile adds the delta-semantic DFG channel + named call-surface +
   literal-value sets). *Default revised by the rank sweep (user-approved):*
   base = structural + **call_names** + **int_values** — call targets are API
-  identity, not naming noise; the no-names verdict stands for variables, fields,
-  strings, floats, types, positions and macro text. Propagation depth = **1**
+  identity, not naming noise; the no-names verdict stands for variables,
+  floats, types, positions and macro text. Rust now also enables
+  **string_chunks** (version-aware rerun below); fields and strings otherwise
+  follow per-language defaults. The initial propagation depth was **1**
   (swept 0–5: zero loses signal, deeper adds brittle features — our emission is
   per-round cumulative, so shallow depths already carry the context signal).
 
@@ -183,6 +185,15 @@ Three instruments, in order of authority:
    candidate-miss through the real pipeline over the full ~56k-unit corpus);
    `eval` gives pairwise threshold-recall + FPR (AUC was dropped as meaningless
    for the product). `tests/sweep.sh` sweeps knobs (`--iters`, `--with`) on rank.
+   Ranking accepts B's exact location or another version of either endpoint,
+   identified by crate + relative file path + function name; A itself is
+   excluded. This identity can conflate same-named methods in different impls;
+   it does not establish semantic equivalence. The best accepted hit supplies
+   the rank, with ties counted in its favor. Earlier exact-B-only results penalized valid
+   cross-version matches and need rerunning before drawing tuning conclusions.
+   `rank -o` writes TSV columns: kind, A file/line, B file/line, accepted-hit
+   jaccard/containment, rank (0 = no accepted candidate), top-hit file/line/name/
+   jaccard/containment, competitor marker, accepted-hit file/line/name.
 2. **LLM judge** (`tests/llm_judge.py`, headless `claude -p`): scores sampled
    pairs on purpose/algorithm/structure/dataflow/api/naming/overall; used to
    diagnose *what kind* of gap the engine has and to arbitrate label noise.
@@ -193,7 +204,35 @@ Three instruments, in order of authority:
    ≥0.85, no wrong-group pair ≥0.6). The regression floor for any default change.
    Plus `tests/run.sh` (fixtures), `tests/lsp-smoke.sh`, `tests/mcp-smoke.sh`.
 
-**Current results** (default config: depth 1, base = structural+call_names+int_values):
+**Corrected Rust string comparison (2026-10-20).** The original analysis
+corpus has 300 crate-version paths, 130,746 indexed units, and 2,196 positive
+evolved/renamed pairs; all three runs skipped zero pairs. Depth 2 and
+`exp_nodes` are held fixed. Whole strings adds `string_values`; chunks adds
+`string_chunks` to the old baseline, without enabling `string_values`.
+
+| kind | n | base MRR | whole strings MRR | chunks MRR | base r@1 | whole strings r@1 | chunks r@1 |
+|---|---|---|---|---|---|---|---|
+| evolved | 667 | 0.924 | 0.930 | 0.925 | 0.889 | 0.900 | 0.892 |
+| evolved_major | 1246 | 0.787 | 0.821 | 0.811 | 0.731 | 0.770 | 0.757 |
+| renamed | 283 | 0.986 | 0.983 | 0.986 | 0.979 | 0.972 | 0.979 |
+| **ALL** | **2196** | **0.854** | **0.875** | **0.869** | | | |
+
+**String chunks are the Rust default (user decision).** Both string options
+beat the baseline (the renamed loss is negligible next to the major-version
+gain). Whole strings measured slightly higher (ALL 0.875 vs 0.869; on
+major-version pairs 20 exclusive top-1 wins versus 3 for chunks), but chunks
+were chosen anyway: they keep partial credit when a message or format string
+is edited, where a whole-string seed is simply lost. `Sigdb.format_version = 5`
+invalidates old dependency signatures.
+These numbers rank the best acceptable hit, including
+ties, so they improve on the earlier post-hoc check of only the top hit.
+Inputs, per-pair TSVs, summaries, a pre-default-change binary and `rerun.sh`
+are saved locally under `bench-out/rust-strings-fixed/` (gitignored).
+Two vendored zstd C files failed parsing in all three runs, with no labeled pairs
+skipped.
+
+**Historical results** (exact-B-only metric; depth 1,
+base = structural+call_names+int_values; not comparable to the corrected table):
 
 | rank (56k corpus) | n | MRR | r@1 | r@5 | r@10 | miss |
 |---|---|---|---|---|---|---|
@@ -294,8 +333,10 @@ vendor/opengrep               # pinned engine (git submodule @ 8ee180dc)
   Baseline with Rust-tuned defaults is already strong (evolved MRR 0.86 vs
   Rust's 0.72 — fewer types means version edits perturb less); judge
   correlations mirror Rust (n=148: structure +0.78, purpose +0.64). **Sweep
-  verdict: optimal channels are per-language.** Rust: `call_names+int_values`
-  (strings cost renamed −5pp). Python: those PLUS `string_values+field_names`
+  verdict: optimal channels are per-language.** Rust now uses
+  `call_names+int_values+string_chunks`. The old “strings cost renamed −5pp”
+  verdict used the exact-B-only metric and is superseded by the corrected
+  comparison above. Python: those PLUS `field_names`
   — ALL MRR 0.955→0.969, evolved MRR 0.862→0.929, samefile FPR(max-gate)
   0.068→0.036; `ty_descrs` actively hurts (annotation drift breaks even exact
   pairs). Depth 1 optimal/flat in both. Per-language base configs are wired
@@ -320,6 +361,26 @@ vendor/opengrep               # pinned engine (git submodule @ 8ee180dc)
 
 ## Known levers, deliberately not pulled yet
 
+- **String chunks: Rust and OCaml, not tuned.** Default for Rust (see the
+  corrected comparison above) and OCaml, opt-in elsewhere (`--with
+  string_chunks`). OCaml (opengrep `src/`+`libs/`, v1.20.0 vs v1.31.0, 18.8k
+  units, 275 evolved pairs, version-aware rank): evolved MRR 0.910 base /
+  0.915 whole strings / 0.911 chunks — flat; same-file pairs at max(j,c) ≥ 0.5
+  10.1% / 6.7% / 7.7% of 594. Chosen for the false-positive cut at no ranking
+  cost, and for consistency with Rust.
+  Qualitative analysis of Rust major-version pairs found 20 wins unique to
+  whole strings versus 3 unique to chunks. Source inspection shows both SQL
+  sibling confusion and lost contextual discrimination: nom's `term` uses
+  `"*"`/`"/"`, while `expr` uses `"+"`/`"-"` (these are not shared literals).
+  This comparison changes both representation and weight: `string_values`
+  enters DFG seeds, while `string_chunks` adds separate whole-string/chunk
+  sets. Long strings produce more chunk features, but ranking differences
+  alone do not isolate that effect. Of the three major-version chunks wins,
+  `execute_migration` recovers an SQL table-name edit; `ascii_class` and
+  `emit_end_of_early_data_tls13` already rank first in the baseline.
+  Capping weight per string, down-weighting common chunks, and separating
+  contextual hashing from chunk overlap are the next experiments: they target
+  the sibling confusion that costs chunks against whole strings.
 - Per-field record-construction features — delivered on Rust/Python by
   `exp_nodes` (each record field is its own node); C still collapsed
   (measured tie, kept the simpler winner).
