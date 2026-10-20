@@ -405,7 +405,9 @@ let pct (sorted : float array) (p : float) : float =
 (* For every positive pair (a, b): index the WHOLE corpus, query with a
    through the real pipeline (inverted-index candidates -> max(jaccard,containment)
    ranking), and find the best acceptable hit's rank. B itself and other
-   versions of either endpoint (crate + relative path + name) are acceptable.
+   versions of B (crate + relative path + name) are acceptable; when A is a
+   different function (renamed/exact pairs), A's own other versions are
+   dropped from the ranking, neither hits nor competitors.
    Unlike pairwise eval this includes candidate-selection losses. Ties don't
    count against the accepted hit: rank = 1 + #strictly-better. *)
 let rank ?(ranks_out : string option) (pairs_file : string)
@@ -480,6 +482,14 @@ let rank ?(ranks_out : string option) (pairs_file : string)
                let other_version m endpoint id =
                  canon m.Engine.file <> canon endpoint.Engine.file
                  && id <> None && identity m = id
+               in
+               let hits =
+                 if ia = ib then hits
+                 else
+                   List.filter
+                     (fun (h : Engine.hit) ->
+                       not (other_version h.Engine.meta ma ia))
+                     hits
                in
                let target (h : Engine.hit) =
                  let m = h.Engine.meta in

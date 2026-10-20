@@ -39,6 +39,11 @@ accepts_copy() {
     awk -F '\t' -v copy="$COPY" '$8 == 1 && $15 == copy {ok=1} END {exit !ok}' "$TMP/ranks.tsv"
     echo "ok   rank: $1"
 }
+skips_copy() {
+    run
+    awk -F '\t' -v copy="$COPY" -v b="$B" '$8 == 1 && $15 == b && $9 != copy {ok=1} END {exit !ok}' "$TMP/ranks.tsv"
+    echo "ok   rank: $1"
+}
 rejects_copy() {
     run
     awk -F '\t' -v copy="$COPY" '$8 != 1 && $9 == copy && $15 != copy {ok=1} END {exit !ok}' "$TMP/ranks.tsv"
@@ -48,11 +53,9 @@ rejects_copy() {
 mkdir -p "$CORPUS/sample-3.0.0/src"
 COPY="$CORPUS/sample-3.0.0/src/lib.rs"
 cp "$A" "$COPY"
-accepts_copy "another version of A counts for a renamed pair"
+skips_copy "another version of A is skipped for a renamed pair"
 
-printf '\nstruct Other;\nimpl Other {\n' >> "$COPY"
-sed 's/fn renamed/fn original/' "$B" >> "$COPY"
-printf '}\n' >> "$COPY"
+{ printf 'struct Other;\nimpl Other {\n'; sed 's/fn original/fn renamed/' "$A"; printf '}\n'; } > "$COPY"
 accepts_copy "repeated method names still use crate/path/name identity"
 
 sed 's/fn original/fn renamed/' "$A" > "$COPY"
@@ -94,3 +97,10 @@ printf 'pos\texact\t%s\t1\t7\toriginal\t%s\t1\t7\toriginal\n' \
 run
 awk -F '\t' -v b="$B" '$8 == 1 && $15 == b {ok=1} END {exit !ok}' "$TMP/ranks.tsv"
 echo "ok   rank: symlinks and double slashes resolve to the indexed endpoints"
+
+# evolved pair (A and B are the same function): A's other versions count
+printf 'pub fn original(values: &[i64]) -> i64 {\n    let mut total = 1;\n    for v in values {\n        total *= v;\n    }\n    total\n}\n' > "$B"
+cp "$A" "$CORPUS/sample-3.0.0/src/lib.rs"
+COPY=$(cd "$CORPUS/sample-3.0.0/src" && pwd -P)/lib.rs
+printf 'pos\tevolved\t%s\t1\t7\toriginal\t%s\t1\t7\toriginal\n' "$A" "$B" > "$TMP/pairs.tsv"
+accepts_copy "another version of A counts for an evolved pair"

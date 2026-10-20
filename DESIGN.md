@@ -185,9 +185,10 @@ Three instruments, in order of authority:
    candidate-miss through the real pipeline over the full ~56k-unit corpus);
    `eval` gives pairwise threshold-recall + FPR (AUC was dropped as meaningless
    for the product). `tests/sweep.sh` sweeps knobs (`--iters`, `--with`) on rank.
-   Ranking accepts B's exact location or another version of either endpoint,
-   identified by crate + relative file path + function name; A itself is
-   excluded. This identity can conflate same-named methods in different impls;
+   Ranking accepts B's exact location or another version of B, identified by
+   crate + relative file path + function name; A itself is excluded. When A
+   and B are different functions (renamed/exact pairs), A's own other
+   versions are dropped from the ranking: neither hits nor competitors. This identity can conflate same-named methods in different impls;
    it does not establish semantic equivalence. The best accepted hit supplies
    the rank, with ties counted in its favor. Earlier exact-B-only results penalized valid
    cross-version matches and need rerunning before drawing tuning conclusions.
@@ -226,6 +227,9 @@ is edited, where a whole-string seed is simply lost. `Sigdb.format_version = 5`
 invalidates old dependency signatures.
 These numbers rank the best acceptable hit, including
 ties, so they improve on the earlier post-hoc check of only the top hit.
+The renamed column predates dropping A's other versions: back then they
+counted as hits, which credited 13–14 of the 283 renamed pairs per config
+(similar in all three, so the comparison stands).
 Inputs, per-pair TSVs, summaries, a pre-default-change binary and `rerun.sh`
 are saved locally under `bench-out/rust-strings-fixed/` (gitignored).
 Two vendored zstd C files failed parsing in all three runs, with no labeled pairs
