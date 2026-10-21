@@ -391,7 +391,12 @@ binding in-switch; only collision rate matters), 62-bit non-negative ints.
   function's callees evolve with it. The parent is nearly free on rank (ALL
   −0.002) and removes 11,288 marghera pairs, 99.6% of them with a closure
   side: the same small closure in unrelated parents, the one-line-closure
-  noise the workspace was first reported for.
+  noise the workspace was first reported for. *Decision (user,
+  2026-10-21): Context stays off, parent included.* Ranking doesn't move,
+  and the dupes gain alone doesn't justify the 2× scan cost or the work to
+  remove it (storing Context only for units that have neighbours). Revisit
+  if closure noise in `dupes` becomes the complaint again; `--weights
+  family.context=0.5,context.callees=0` is the measured setting.
   **Callees, qualitatively** (callees-only vs off, pairs ranked top-5 by
   either): 27 move up, 88 down; 13 reach rank 1, 56 lose it. Where they
   help, the target has a structural twin that calls different things:
