@@ -83,6 +83,30 @@ let context_parent () = override "context.parent" 1.0 > 0.
 let context_max_callee_features () =
   int_of_float (override "context.max_callee_features" 0.)
 
+(* [Tree] family variants (D16), overridable through --weights like the
+   gates above: tree.names (0 verbatim, 1 entity kinds, 2 kinds only),
+   tree.subtrees (> 0 = on), tree.ngrams / tree.radius (max n / r, 0 =
+   off), tree.edges (> 0 = on), tree.log_counts (> 0 = on), and the extras'
+   weight scales tree.w_ngram / tree.w_edge / tree.w_radius. The defaults
+   are today's subtree hashes and nothing else. `dupes --blocks` reads
+   Syntax_tree.nodes directly: block clones stay name-exact whatever these
+   say. *)
+let tree_config () : Syntax_tree.config =
+  let d = Syntax_tree.default_config in
+  let int name default = int_of_float (override name (float_of_int default)) in
+  let flag name default = override name (if default then 1. else 0.) > 0. in
+  {
+    Syntax_tree.names = int "tree.names" d.names;
+    subtrees = flag "tree.subtrees" d.subtrees;
+    ngrams = int "tree.ngrams" d.ngrams;
+    edges = flag "tree.edges" d.edges;
+    radius = int "tree.radius" d.radius;
+    log_counts = flag "tree.log_counts" d.log_counts;
+    w_ngram = override "tree.w_ngram" d.w_ngram;
+    w_edge = override "tree.w_edge" d.w_edge;
+    w_radius = override "tree.w_radius" d.w_radius;
+  }
+
 let string_set_weight () = override "string_set" 0.5
 let string_chunk_weight () = override "string_chunks" 0.2
 let structural_weight = 0.3
@@ -215,7 +239,8 @@ let extract ?(profile : profile option) ?(lang : Lang.t option)
   in
   let tree =
     match body with
-    | Some b when family_weight Tree > 0. -> Syntax_tree.features b
+    | Some b when family_weight Tree > 0. ->
+        Syntax_tree.features ~cfg:(tree_config ()) b
     | _ -> []
   in
   of_families [ (Base, all); (Tree, tree) ]

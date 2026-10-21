@@ -249,6 +249,70 @@ binding in-switch; only collision rate matters), 62-bit non-negative ints.
   likely because Tree keeps type and path names the miner's renamed pairs
   change (Base ignores types). The value of D16 is `--blocks`; a Tree
   variant hashing type/path names to their kind is the next thing to try.
+  **Tree variants (2026-10-21)**, `--weights` knobs (no rebuild; in the
+  sigdb weight digest), all off by default: the defaults give today's
+  features bit for bit (golden digests in `test_syntax_tree`; marghera
+  `dupes`, `--blocks` and `family.tree=0.5` outputs byte-identical), and
+  `--blocks` reads `Syntax_tree.nodes` directly, so block clones stay
+  name-exact whatever the knobs say. `tree.names`: 0 = names verbatim;
+  1 = **entity kinds** in the token stream: a call target is
+  `call/<arity>`, a field or method name `field`, a whole type one `type`
+  token, a `use` one `directive`, any other non-local name (consts, enum
+  variants, constructor patterns, paths, nested-definition names) one
+  `ident`, and identifier-shaped tokens left in macro bags `ident` (on
+  marghera only keywords and a few attribute tokens survive verbatim);
+  2 = **kinds only**: a *kind tree* over statements, expressions and
+  patterns, each node its AST constructor (operators and other specials
+  keep their symbol, `AssignOp` its operator, literals their kind, locals
+  `$v`, other names `N`) mixed with its kids' hashes, no tokens; the
+  subtree features are its statement nodes. Flake-style extras on the same
+  kind tree (labels per `tree.names`: mode 0 `call:f` / `field:x` / name
+  text, mode 1 `call/2` / `field` / `ident`; types and macro bags carry no
+  node), each on its own: `tree.radius=d`, every node's shape truncated at
+  r = 1..min(d, height), weight 0.25·r; `tree.edges=1`, parent→child
+  label pairs, 0.25; `tree.ngrams=k`, n-grams (n = 1..k) along each
+  block's statements, a statement standing as its radius-1 shape, weight
+  0.25·n; `tree.subtrees=0` drops the subtree hashes (extras only).
+  `tree.log_counts` (default on, extras only) adds flake's 2nd/4th/8th…
+  occurrence features; scales `tree.w_radius` / `w_edge` / `w_ngram`.
+  Variables and parameters never leak in any mode (unit tests: renamed
+  copies equal in every variant; a callee or type-name change merges in
+  modes 1 and 2, not 0). **Slice, 410 pairs, sanity check only**
+  (`bench-out/small`; evolved / evolved_major / renamed are MRR (r@1)):
+
+  | variant | evolved | evolved_major | renamed | ALL | sanity |
+  |---|---|---|---|---|---|
+  | off (default) | 0.960 (0.939) | 0.820 (0.757) | 0.977 (0.966) | 0.898 | 16/16 |
+  | 0.2, names=0 (today) | 0.960 (0.939) | 0.829 (0.767) | 0.966 (0.948) | 0.900 | 12/16 |
+  | 0.5, names=0 (today) | 0.958 (0.939) | 0.838 (0.778) | 0.966 (0.948) | 0.904 | 12/16 |
+  | 0.2, names=1 | 0.962 (0.945) | 0.824 (0.757) | 0.977 (0.966) | 0.901 | 12/16 |
+  | 0.5, names=1 | 0.958 (0.939) | 0.816 (0.741) | 0.977 (0.966) | 0.895 | 12/16 |
+  | 0.2, names=2 | 0.959 (0.939) | 0.823 (0.757) | 0.977 (0.966) | 0.899 | 12/16 |
+  | 0.5, names=2 | 0.958 (0.939) | 0.819 (0.751) | 0.977 (0.966) | 0.897 | 12/16 |
+  | 0.2, names=1 radius=2 | 0.959 (0.939) | 0.836 (0.778) | 0.977 (0.966) | 0.905 | 14/16 |
+  | 0.5, names=1 radius=2 | 0.954 (0.933) | 0.829 (0.762) | 0.977 (0.966) | 0.899 | 12/16 |
+  | 0.2, names=1 ngrams=3 edges | 0.958 (0.939) | 0.826 (0.762) | 0.977 (0.966) | 0.900 | 14/16 |
+  | 0.5, names=1 ngrams=3 edges | 0.958 (0.939) | 0.818 (0.751) | 0.977 (0.966) | 0.896 | 12/16 |
+  | 0.2, names=2 radius=2, no subtrees | 0.958 (0.939) | 0.833 (0.772) | 0.977 (0.966) | 0.903 | 16/16 |
+  | 0.5, names=2 radius=2, no subtrees | 0.954 (0.933) | 0.838 (0.783) | 0.977 (0.966) | 0.904 | 16/16 |
+  | 0.5, names=2 radius=2, no subtrees, no log counts | 0.959 (0.939) | 0.840 (0.778) | 0.977 (0.966) | 0.907 | 16/16 |
+  | 1.0, names=2 radius=2, no subtrees | 0.955 (0.933) | 0.825 (0.757) | 0.977 (0.966) | 0.898 | 16/16 |
+  | 0.5, names=2 radius=3, no subtrees | 0.955 (0.933) | 0.834 (0.767) | 0.977 (0.966) | 0.902 | 14/16 |
+  | 0.5, names=2 ngrams=3, no subtrees | 0.953 (0.933) | 0.830 (0.767) | 0.977 (0.966) | 0.900 | 13/16 |
+  | 0.3, names=2 radius=2 ngrams=3 edges, no subtrees | 0.959 (0.939) | 0.832 (0.772) | 0.977 (0.966) | 0.903 | 16/16 |
+  | 0.5, names=2 radius=2 ngrams=3 edges, no subtrees | 0.958 (0.939) | 0.843 (0.794) | 0.977 (0.966) | 0.908 | 16/16 |
+  | ditto, no log counts | 0.959 (0.939) | 0.837 (0.778) | 0.977 (0.966) | 0.905 | 16/16 |
+  | 0.5, names=1 radius=2 ngrams=3 edges, no subtrees | 0.958 (0.939) | 0.831 (0.772) | 0.977 (0.966) | 0.902 | 16/16 |
+  | 0.5, names=1 radius=2, no subtrees | 0.951 (0.926) | 0.838 (0.778) | 0.977 (0.966) | 0.903 | 16/16 |
+  | 0.5, names=0 radius=2, no subtrees | 0.957 (0.933) | 0.850 (0.799) | 0.966 (0.948) | 0.909 | 16/16 |
+
+  Names 1 and 2 give back all of renamed (0.966 → 0.977), so the renamed
+  loss was type and path names. Every variant that keeps exact subtrees
+  fails 2–4 sanity cases, the `floor_all` ⊂ `clamp_all` containment case
+  (0.77–0.85 vs ≥ 0.85); extras-only variants (radius ≤ 2) pass 16/16.
+  Best on the slice: names=2, radius=2 + ngrams=3 + edges, no subtrees, at
+  0.5 (evolved_major +0.023, ALL +0.010, evolved −0.002). Slice effects
+  this small need the full rank run.
 
 - **D17 — Call-graph context family** *(default off pending sweep)*. After
   ida-similarity's one-hop context: thin wrappers and one-line predicates
