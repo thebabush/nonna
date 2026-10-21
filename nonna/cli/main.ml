@@ -25,10 +25,15 @@ let cmd_features (file : string) =
   |> List.iter (fun (u : Units.unit_info) ->
          let feats = Dfg.extract u.Units.ucfg in
          let sg = Signature.extract ~lang:u.Units.ulang u.Units.ucfg in
-         Printf.printf "=== %s (%s)%s — %d dfg features, %d total\n"
+         Printf.printf "=== %s (%s)%s — %d dfg features, %d total (%s)\n"
            u.Units.uname (Units.loc_str u)
            (if u.Units.utest then " [test]" else "")
-           (List.length feats) (Signature.size sg);
+           (List.length feats) (Signature.size sg)
+           (Signature.all_families
+           |> List.map (fun f ->
+                  Printf.sprintf "%s %d" (Signature.family_name f)
+                    (Array.length (Signature.family_features sg f)))
+           |> String.concat ", ");
          feats
          |> List.iter (fun (f : Dfg.feature) ->
                 Printf.printf "  %016x %s\n" f.Dfg.hash
@@ -252,7 +257,8 @@ let rec strip_profile acc = function
       strip_profile acc rest
   | "--weights" :: v :: rest ->
       (* per-DFG-tag weight overrides for tuning sweeps, e.g.
-         --weights construct=1.3,control=1.2 (tag names per Dfg.tag_name) *)
+         --weights construct=1.3,control=1.2 (tag names per Dfg.tag_name;
+         family fusion weights as family.<name>, D15) *)
       String.split_on_char ',' v
       |> List.iter (fun kv ->
              match String.split_on_char '=' kv with

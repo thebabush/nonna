@@ -3,10 +3,29 @@
 
 type weighted = { hash : Fhash.t; weight : float }
 
+(* D15 — feature families: groups of features scored as separate weighted
+   Jaccards and fused by family weight (ida-similarity style). [Base] holds
+   every feature extracted today; future families (syntax-subtree, call-graph
+   context) get their own constructor here and in [all_families]. *)
+type family = Base
+
+let all_families : family list = [ Base ]
+
+(* position in [all_families] *)
+let family_index (f : family) : int = match f with Base -> 0
+let family_name (f : family) : string = match f with Base -> "base"
+
 type t = {
-  features : weighted array; (* sorted by hash, deduplicated (max weight) *)
-  raw : Fhash.t array; (* sorted hashes, for MinHash *)
+  families : weighted array array;
+      (* indexed by [family_index]; each sorted by hash, deduplicated (max
+         weight) *)
+  raw : Fhash.t array;
+      (* sorted union of every family's hashes: the engine's postings and
+         candidate generation (D8) *)
 }
+
+let family_features (s : t) (f : family) : weighted array =
+  s.families.(family_index f)
 
 (* Per-source weights (v1 defaults: dfg 1.0, call surface 0.8, consts 0.5,
    structural 0.3). DFG features are weighted per tag. *)
@@ -36,6 +55,13 @@ let misc_weight = 0.8
 let override (name : string) (default : float) : float =
   Option.value (Hashtbl.find_opt weight_overrides name) ~default
 
+(* Fusion weights per family (D15), overridable as "family.<name>" via
+   --weights. A family weighted 0 is left out of the fused score. *)
+let default_family_weight (f : family) : float = match f with Base -> 1.0
+
+let family_weight (f : family) : float =
+  override ("family." ^ family_name f) (default_family_weight f)
+
 let string_set_weight () = override "string_set" 0.5
 let string_chunk_weight () = override "string_chunks" 0.2
 let structural_weight = 0.3
@@ -61,6 +87,43 @@ let full_profile =
 
 (* Set once at CLI startup (--profile). *)
 let default_profile : profile ref = ref structural_profile
+
+(* Non-Base families remix their hashes with a per-family seed so they cannot
+   coincide with Base hashes in [raw] (beyond the usual 62-bit collision
+   odds); Base hashes stay as extracted, so postings and caches don't move. *)
+let family_seed (f : family) : Fhash.t =
+  Fhash.hash_str ("nonna.family." ^ family_name f)
+
+let salt (f : family) (h : Fhash.t) : Fhash.t =
+  if f = Base then h else Fhash.mix (family_seed f) h
+
+(* Build a signature from per-family (hash, weight) lists (a family may
+   appear more than once). Within a family the same hash appearing multiple
+   times keeps the max weight. *)
+let of_families (parts : (family * (Fhash.t * float) list) list) : t =
+  let dedup (f : family) : weighted array =
+    let tbl : (Fhash.t, float) Hashtbl.t = Hashtbl.create 64 in
+    List.iter
+      (fun (f', all) ->
+        if f' = f then
+          List.iter
+            (fun (h, w) ->
+              match Hashtbl.find_opt tbl h with
+              | Some w0 when w0 >= w -> ()
+              | _ -> Hashtbl.replace tbl h w)
+            all)
+      parts;
+    Hashtbl.fold (fun h w acc -> { hash = salt f h; weight = w } :: acc) tbl []
+    |> List.sort (fun a b -> compare a.hash b.hash)
+    |> Array.of_list
+  in
+  let families = Array.of_list (List.map dedup all_families) in
+  let raw =
+    Array.concat (Array.to_list families)
+    |> Array.map (fun f -> f.hash)
+    |> Array.to_list |> List.sort_uniq compare |> Array.of_list
+  in
+  { families; raw }
 
 (* [lang] selects the per-language base channels (Dfg.base_cfg_for). *)
 let extract ?(profile : profile option) ?(lang : Lang.t option)
@@ -99,40 +162,29 @@ let extract ?(profile : profile option) ?(lang : Lang.t option)
     @ (sem.Semantic.misc |> List.map (fun h -> (h, misc_weight)))
     @ (Structural.extract fcfg |> List.map (fun h -> (h, structural_weight)))
   in
-  (* dedup: same hash appearing multiple times keeps the max weight *)
-  let tbl : (Fhash.t, float) Hashtbl.t = Hashtbl.create 64 in
-  List.iter
-    (fun (h, w) ->
-      match Hashtbl.find_opt tbl h with
-      | Some w0 when w0 >= w -> ()
-      | _ -> Hashtbl.replace tbl h w)
-    all;
-  let features =
-    Hashtbl.fold (fun h w acc -> { hash = h; weight = w } :: acc) tbl []
-    |> List.sort (fun a b -> compare a.hash b.hash)
-    |> Array.of_list
-  in
-  { features; raw = Array.map (fun f -> f.hash) features }
+  of_families [ (Base, all) ]
 
-let size (s : t) : int = Array.length s.raw
+(* Total feature count across families (the min-feature gates). *)
+let size (s : t) : int =
+  Array.fold_left (fun n fs -> n + Array.length fs) 0 s.families
 
 (* Merge-walk two hash-sorted weighted arrays, folding over the union.
    `f acc weight_in_a weight_in_b` with 0. when absent. *)
-let fold_union (f : 'a -> float -> float -> 'a) (init : 'a) (a : t) (b : t) :
-    'a =
-  let na = Array.length a.features and nb = Array.length b.features in
+let fold_union (f : 'a -> float -> float -> 'a) (init : 'a)
+    (a : weighted array) (b : weighted array) : 'a =
+  let na = Array.length a and nb = Array.length b in
   let rec go acc i j =
     if i >= na && j >= nb then acc
-    else if j >= nb || (i < na && a.features.(i).hash < b.features.(j).hash)
-    then go (f acc a.features.(i).weight 0.) (i + 1) j
-    else if i >= na || b.features.(j).hash < a.features.(i).hash then
-      go (f acc 0. b.features.(j).weight) i (j + 1)
-    else go (f acc a.features.(i).weight b.features.(j).weight) (i + 1) (j + 1)
+    else if j >= nb || (i < na && a.(i).hash < b.(j).hash) then
+      go (f acc a.(i).weight 0.) (i + 1) j
+    else if i >= na || b.(j).hash < a.(i).hash then
+      go (f acc 0. b.(j).weight) i (j + 1)
+    else go (f acc a.(i).weight b.(j).weight) (i + 1) (j + 1)
   in
   go init 0 0
 
-(* Weighted Jaccard: sum(min) / sum(max). *)
-let jaccard (a : t) (b : t) : float =
+(* Weighted Jaccard of one family: sum(min) / sum(max). *)
+let family_jaccard (a : weighted array) (b : weighted array) : float =
   let inter, union =
     fold_union
       (fun (i, u) wa wb -> (i +. Float.min wa wb, u +. Float.max wa wb))
@@ -140,12 +192,71 @@ let jaccard (a : t) (b : t) : float =
   in
   if union = 0. then 0. else inter /. union
 
-(* Asymmetric containment (D5): how much of `query` is covered by `target`?
-   1.0 means the target does everything the query does (and possibly more). *)
-let containment ~(query : t) (target : t) : float =
+(* Containment of one family: sum(min) / sum(query). *)
+let family_containment ~(query : weighted array) (target : weighted array) :
+    float =
   let inter, qsum =
     fold_union
       (fun (i, q) wq wt -> (i +. Float.min wq wt, q +. wq))
       (0., 0.) query target
   in
   if qsum = 0. then 0. else inter /. qsum
+
+(* D15 fusion: sum_f w_f * score_f / sum_f w_f over the families [present]
+   selects (and that carry weight). A lone family returns its own score
+   untouched, so a Base-only signature scores exactly as before families. *)
+let fuse ~(present : family -> bool) (score : family -> float) : float =
+  let parts =
+    List.filter_map
+      (fun f ->
+        let w = family_weight f in
+        if w > 0. && present f then Some (w, f) else None)
+      all_families
+  in
+  match parts with
+  | [] -> 0.
+  | [ (_, f) ] -> score f
+  | _ ->
+      let num, den =
+        List.fold_left
+          (fun (n, d) (w, f) -> (n +. (w *. score f), d +. w))
+          (0., 0.) parts
+      in
+      num /. den
+
+(* Weighted Jaccard, fused over the families non-empty on either side; a
+   family empty on one side only scores 0 there. *)
+let jaccard (a : t) (b : t) : float =
+  fuse
+    ~present:(fun f ->
+      Array.length (family_features a f) > 0
+      || Array.length (family_features b f) > 0)
+    (fun f -> family_jaccard (family_features a f) (family_features b f))
+
+(* Asymmetric containment (D5): how much of `query` is covered by `target`?
+   1.0 means the target does everything the query does (and possibly more).
+   Fused over the families non-empty in the query. *)
+let containment ~(query : t) (target : t) : float =
+  fuse
+    ~present:(fun f -> Array.length (family_features query f) > 0)
+    (fun f ->
+      family_containment ~query:(family_features query f)
+        (family_features target f))
+
+(* Per-family scores, unfused (experiments): every family non-empty on
+   either side, containment of [a] in [b]. *)
+type family_score = { family : family; jaccard : float; containment : float }
+
+let family_scores (a : t) (b : t) : family_score list =
+  List.filter_map
+    (fun f ->
+      let fa = family_features a f and fb = family_features b f in
+      if Array.length fa = 0 && Array.length fb = 0 then None
+      else
+        Some
+          {
+            family = f;
+            jaccard = family_jaccard fa fb;
+            containment = family_containment ~query:fa fb;
+          })
+    all_families

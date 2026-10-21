@@ -9,10 +9,13 @@ module Signature = Nonna_features.Signature
 
 (* bump on any change to hashing/features/weights, or to the [meta] record
    (Marshal is untyped: a reshaped record reads back as garbage, not an error) *)
-let format_version = 6
+let format_version = 7
 
 type entry = { meta : Engine.meta; sg : Signature.t }
 
+(* The weight digest covers every --weights override, "family.*" fusion
+   weights included: those only change scoring, not the stored signatures, so
+   overriding one costs a re-index but never serves a stale cache. *)
 let profile_tag () : string =
   let module Dfg = Nonna_features.Dfg in
   let weights =

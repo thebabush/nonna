@@ -172,6 +172,20 @@ binding in-switch; only collision rate matters), 62-bit non-negative ints.
   follow per-language defaults. The initial propagation depth was **1**
   (swept 0–5: zero loses signal, deeper adds brittle features — our emission is
   per-round cumulative, so shallow depths already carry the context signal).
+- **D15 — Feature families, fused scoring.** A signature holds one weighted
+  feature array per *family* (`Signature.family`); each family is scored as its
+  own weighted Jaccard / containment and the scores are fused as
+  Σ w_f·J_f / Σ w_f over the families non-empty on either side (containment:
+  non-empty in the query). A family empty on one side scores 0; empty on both,
+  it is skipped; weight 0 drops it. Weights default in `signature.ml`, override
+  as `--weights family.<name>=w`. `raw` (postings, candidate generation) stays
+  one sorted array, the union of all families; non-Base families salt their
+  hashes with a per-family seed so they can't coincide with Base hashes. Motive:
+  ida-similarity scores a function's own features and its context as two
+  Jaccards (0.5/0.5), which beats one Jaccard over the union. *(shipped as
+  plumbing only: `Base` is the single family and holds every current feature,
+  so scores are bit-identical; syntax-subtree and call-graph-context families
+  come next)*
 
 ## Evaluation
 
@@ -321,7 +335,8 @@ oracle is Rust-only (N8); evolved_major's low tail is genuine rewrites.
 ```
 nonna/
   features/  nonna_features   # fhash, il_util, dfg (graph + grafting + φ),
-                              # structural, semantic, signature (profiles)
+                              # structural, semantic, signature (profiles,
+                              # families + fused scoring, D15)
   index/     nonna_index      # engine: inverted index + jaccard/containment rank
   cli/       (executable)     # main (commands/flags), units (enumeration),
                               # bench (mine/eval/rank), viz (DOT), corpus (cargo+std),
