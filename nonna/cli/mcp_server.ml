@@ -546,10 +546,7 @@ let find_duplicates (args : J.t) : J.t =
       (* the line total covers the workspace fns the scan's side gates pass *)
       let scanned =
         List.init !workspace_fns (Engine.get_meta !engine)
-        |> List.filter (fun (m : Engine.meta) ->
-               (include_tests || not m.Engine.is_test)
-               && Engine.path_match ~include_paths:flt.Engine.include_paths
-                    ~exclude_paths:flt.Engine.exclude_paths m.Engine.file)
+        |> List.filter (Engine.side_ok flt)
       in
       let shown = if limit > 0 then List.filteri (fun i _ -> i < limit) cs else cs in
       tool_text

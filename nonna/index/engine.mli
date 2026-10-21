@@ -117,6 +117,11 @@ type dup_filter = {
 }
 
 val default_filter : dup_filter
+
+val side_ok : dup_filter -> meta -> bool
+(** The per-side gate of a dupe scan: test code (unless [include_tests]) and
+    the include/exclude path scope. A unit failing it is in no pair. *)
+
 val duplicates_filtered : t -> dup_filter -> pair list
 
 (* A scan that can be stopped: [should_stop] is polled once per outer-loop

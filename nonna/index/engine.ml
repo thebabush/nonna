@@ -306,6 +306,11 @@ let path_ok (flt : dup_filter) (file : string) : bool =
   path_match ~include_paths:flt.include_paths ~exclude_paths:flt.exclude_paths
     file
 
+(* Per-side gate that sinks every pair the side is in (test code, path
+   scope) — checked before any candidate generation or scoring. *)
+let side_ok (flt : dup_filter) (m : meta) : bool =
+  (flt.include_tests || not m.is_test) && path_ok flt m.file
+
 (* Outcome of a whole-corpus scan. [scanned] is how far the outer (a-side)
    loop got out of [total]; [complete] is false when [should_stop] cut the
    scan short — the pairs found so far are valid, just not exhaustive. *)
@@ -321,11 +326,7 @@ let duplicates_scan ?(should_stop = fun () -> false) (t : t)
      — the difference between O(workspace) and O(workspace+deps+std). *)
   let bound n = if n > 0 then min n (size t) else size t in
   let amax = bound flt.scope_a and bmax = bound flt.scope_b in
-  (* per-side gates that sink every pair the side is in — checked before any
-     candidate generation or scoring *)
-  let side_ok (m : meta) =
-    (flt.include_tests || not m.is_test) && path_ok flt m.file
-  in
+  let side_ok = side_ok flt in
   let fid = ref 0 in
   let stopped = ref false in
   while !fid < amax && not !stopped do

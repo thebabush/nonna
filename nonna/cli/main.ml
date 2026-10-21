@@ -80,11 +80,7 @@ let cmd_dupes ?classes (paths : string list) (flt : Engine.dup_filter) =
         Clones.classes ~threshold:o.class_threshold ~by_max:flt.Engine.by_max
           pairs
       in
-      let gated (u : Units.unit_info) =
-        (flt.Engine.include_tests || not u.Units.utest)
-        && Engine.path_match ~include_paths:flt.Engine.include_paths
-             ~exclude_paths:flt.Engine.exclude_paths u.Units.ufile
-      in
+      let gated (u : Units.unit_info) = Engine.side_ok flt (Units.meta_of u) in
       (* the units the scan covered, for the line total: the pair scan's
          (indexed, past the side gates), or with blocks every gated unit,
          indexed or not, since blocks are found in all of them *)
