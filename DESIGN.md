@@ -313,6 +313,21 @@ binding in-switch; only collision rate matters), 62-bit non-negative ints.
   Best on the slice: names=2, radius=2 + ngrams=3 + edges, no subtrees, at
   0.5 (evolved_major +0.023, ALL +0.010, evolved −0.002). Slice effects
   this small need the full rank run.
+  **Full benchmark (2,196 pairs), the slice's best:**
+
+  | variant | evolved | evolved_major | renamed | ALL | marghera pairs | named j=1 | scb | sanity |
+  |---|---|---|---|---|---|---|---|---|
+  | off (default) | 0.921 | 0.814 | 0.978 | 0.868 | 23,100 | 1,018 | 174 / 50 | 16/16 |
+  | 0.5, names=0 radius=2, no subtrees | 0.928 | 0.819 | 0.924 | 0.866 | 20,812 | 425 | 169 / 35 | 16/16 |
+  | 0.5, names=2 radius=2 ngrams=3 edges, no subtrees | 0.920 | 0.815 | 0.982 | 0.868 | 40,817 | 927 | 187 / 69 | 16/16 |
+  | 0.5, names=2 radius=2, no subtrees, no log counts | 0.922 | 0.816 | 0.981 | 0.869 | 40,344 | 927 | 187 / 69 | 16/16 |
+  | 0.3, names=2 radius=2 ngrams=3 edges, no subtrees | 0.920 | 0.814 | 0.982 | 0.868 | 37,902 | 927 | 180 / 58 | 16/16 |
+
+  The slice's evolved_major gain does not replicate: ranking is flat.
+  Kind abstraction does remove the renamed penalty (0.982, r@5 0.996),
+  but kinds-only shapes make `dupes` scb-like: looser (marghera pairs
+  23k → 41k, every scb function pair found). No default changes; the
+  knobs stay for scb-compatible clone counting and further experiments.
 
 - **D17 — Call-graph context family** *(default off pending sweep)*. After
   ida-similarity's one-hop context: thin wrappers and one-line predicates
