@@ -48,6 +48,30 @@ check "macros: different callees do not collapse (j < 0.6)" \
 check "macros: unparseable token trees are indexed" \
   "echo \"\$MAC\" | grep -q 'indexed 4 units'"
 
+# Call-graph context (D17, family.context, default off): wrappers with one
+# body calling dissimilar callees drift apart, wrappers calling similar
+# callees do not; one closure in two dissimilar parents stops being identical.
+pair_j() { # dupes output, name a, name b -> jaccard of that pair
+  echo "$1" | grep -F " $2 (" | grep -F " $3 (" | awk '{print $2}' | head -1
+}
+CTX_OFF=$("$BIN" dupes tests/context -t 0.0 --tests)
+CTX_ON=$("$BIN" --weights family.context=0.5 dupes tests/context -t 0.0 --tests)
+CTX_NOPARENT=$("$BIN" --weights family.context=0.5,context.parent=0 dupes tests/context -t 0.0 --tests)
+D_OFF=$(pair_j "$CTX_OFF" wrap_checksum wrap_label)
+D_ON=$(pair_j "$CTX_ON" wrap_checksum wrap_label)
+check "context: wrappers over dissimilar callees score lower ($D_OFF -> $D_ON)" \
+  "[ -n \"\$D_OFF\" ] && [ -n \"\$D_ON\" ] && awk -v a=\"\$D_OFF\" -v b=\"\$D_ON\" 'BEGIN{exit !(b < a - 0.1)}'"
+S_OFF=$(pair_j "$CTX_OFF" wrap_weight wrap_cost)
+S_ON=$(pair_j "$CTX_ON" wrap_weight wrap_cost)
+check "context: wrappers over similar callees stay high ($S_OFF -> $S_ON)" \
+  "[ -n \"\$S_OFF\" ] && [ -n \"\$S_ON\" ] && awk -v a=\"\$S_OFF\" -v b=\"\$S_ON\" 'BEGIN{exit !(b >= a)}'"
+L_OFF=$(pair_j "$CTX_OFF" 'ids_csv::<lambda>' 'scaled_labels::<lambda>')
+L_ON=$(pair_j "$CTX_ON" 'ids_csv::<lambda>' 'scaled_labels::<lambda>')
+L_NOPARENT=$(pair_j "$CTX_NOPARENT" 'ids_csv::<lambda>' 'scaled_labels::<lambda>')
+check "context: one closure in dissimilar parents drifts apart ($L_OFF -> $L_ON)" \
+  "[ \"\$L_OFF\" = 1.000 ] && [ -n \"\$L_ON\" ] && awk -v x=\"\$L_ON\" 'BEGIN{exit !(x < 0.9)}'"
+check "context: context.parent=0 switches the parent off" "[ \"\$L_NOPARENT\" = 1.000 ]"
+
 # check: a throwaway repo with util.rs committed; draft.rs's avg copies mean.
 ABS_BIN=$PWD/$BIN
 REPO=$(mktemp -d)

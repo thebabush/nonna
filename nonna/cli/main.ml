@@ -22,10 +22,9 @@ module Engine = Nonna_index.Engine
 (* ── Commands ────────────────────────────────────────────────────────────── *)
 
 let cmd_features (file : string) =
-  Units.units_of_file file
-  |> List.iter (fun (u : Units.unit_info) ->
+  Units.extract_all (Units.units_of_file file)
+  |> List.iter (fun ((u : Units.unit_info), sg) ->
          let feats = Dfg.extract u.Units.ucfg in
-         let sg = Units.extract u in
          Printf.printf "=== %s (%s)%s — %d dfg features, %d total (%s)\n"
            u.Units.uname (Units.loc_str u)
            (if u.Units.utest then " [test]" else "")
@@ -66,9 +65,9 @@ let cmd_query (corpus : string list) (draft : string) (threshold : float)
     (top_k : int) =
   let eng, kept = Units.index_units (Units.units_of_paths corpus) in
   Printf.printf "corpus: %d units indexed\n" (List.length kept);
-  Units.units_of_file draft
-  |> List.iter (fun (u : Units.unit_info) ->
-         let sg = Units.extract u in
+  (* the draft's call-graph context (D17) resolves within the draft file *)
+  Units.extract_all (Units.units_of_file draft)
+  |> List.iter (fun ((u : Units.unit_info), sg) ->
          Printf.printf "\n── %s (%s) — %d features\n" u.Units.uname
            (Units.loc_str u) (Signature.size sg);
          if Signature.size sg < Units.min_features then
@@ -265,7 +264,9 @@ let rec strip_profile acc = function
   | "--weights" :: v :: rest ->
       (* per-DFG-tag weight overrides for tuning sweeps, e.g.
          --weights construct=1.3,control=1.2 (tag names per Dfg.tag_name;
-         family fusion weights as family.<name>, D15) *)
+         family fusion weights as family.<name>, D15; the context family's
+         gates as context.callees / context.parent / context.max_callee_features,
+         D17) *)
       String.split_on_char ',' v
       |> List.iter (fun kv ->
              match String.split_on_char '=' kv with

@@ -258,37 +258,47 @@ let units_of_code (code : string) (language : string) :
     (Array.of_list (String.split_on_char '\n' code));
   (path, units)
 
+(* The unit of [file] at [line], else named [name], else its first one;
+   with all of the file's units (the call-graph context scope, D17). *)
+let unit_in_file (file : string) ~(line : int option) ~(name : string option)
+    : Units.unit_info option * Units.unit_info list =
+  let units = Units.units_of_file file in
+  ( (match (line, name) with
+    | Some line, _ -> Units.unit_at_in units line
+    | None, Some name ->
+        List.find_opt (fun (u : Units.unit_info) -> u.Units.uname = name) units
+    | None, None -> ( match units with u :: _ -> Some u | [] -> None)),
+    units )
+
 (* Resolve one side of a tool call: <p>_code [+ <p>_language] or
-   <p>_file + (<p>_line | <p>_name). Returns (label, unit) or an error. *)
+   <p>_file + (<p>_line | <p>_name). Returns (label, unit, the units of its
+   file or snippet — its call-graph context scope, D17) or an error. *)
 let resolve_side (args : J.t) (p : string) :
-    (string * Units.unit_info, string) result =
+    (string * Units.unit_info * Units.unit_info list, string) result =
   match str_arg args (p ^ "_code") with
   | Some code -> (
       let lang =
         Option.value (str_arg args (p ^ "_language")) ~default:"rust"
       in
       match units_of_code code lang with
-      | _, u :: _ -> Ok (u.Units.uname ^ " (drafted)", u)
+      | _, (u :: _ as units) -> Ok (u.Units.uname ^ " (drafted)", u, units)
       | _, [] -> Error (p ^ "_code: no parseable function found"))
   | None -> (
       match str_arg args (p ^ "_file") with
       | None -> Error (p ^ ": provide " ^ p ^ "_code or " ^ p ^ "_file")
       | Some file -> (
-          let unit =
-            match (int_arg args (p ^ "_line"), str_arg args (p ^ "_name")) with
-            | Some line, _ -> Units.unit_at file line
-            | None, Some name ->
-                Units.units_of_file file
-                |> List.find_opt (fun (u : Units.unit_info) ->
-                       u.Units.uname = name)
-            | None, None -> (
-                match Units.units_of_file file with u :: _ -> Some u | [] -> None)
-          in
-          match unit with
-          | Some u ->
-              Ok (Printf.sprintf "%s (%s:%d)" u.Units.uname file
-                    u.Units.uline_start, u)
-          | None -> Error (p ^ ": no matching function in " ^ file)))
+          match
+            unit_in_file file
+              ~line:(int_arg args (p ^ "_line"))
+              ~name:(str_arg args (p ^ "_name"))
+          with
+          | Some u, units ->
+              Ok
+                ( Printf.sprintf "%s (%s:%d)" u.Units.uname file
+                    u.Units.uline_start,
+                  u,
+                  units )
+          | None, _ -> Error (p ^ ": no matching function in " ^ file)))
 
 (* ── Hits rendering ──────────────────────────────────────────────────────── *)
 
@@ -307,14 +317,17 @@ let hit_block (h : Engine.hit) : string =
     h.Engine.jaccard h.Engine.containment
     (String.concat "\n" body)
 
-let query_unit (u : Units.unit_info) ~(threshold : float) ~(top_k : int)
-    ~(filter : Engine.query_filter) : Engine.hit list =
-  match Units.signature u with
-  | None -> []
-  | Some sg ->
-      let self_m = Units.meta_of u in
-      Engine.query !engine sg ~threshold ~max_results:top_k ~filter
-        ~accept:(fun m -> not (Engine.nests self_m m))
+(* [among]: the units of [u]'s file or snippet, which its call-graph
+   context (D17) resolves within — not the index. *)
+let query_unit ~(among : Units.unit_info list) (u : Units.unit_info)
+    ~(threshold : float) ~(top_k : int) ~(filter : Engine.query_filter) :
+    Engine.hit list =
+  let sg = Units.extract_in among u in
+  if Signature.size sg < Units.min_features then []
+  else
+    let self_m = Units.meta_of u in
+    Engine.query !engine sg ~threshold ~max_results:top_k ~filter
+      ~accept:(fun m -> not (Engine.nests self_m m))
 
 let hits_text (label : string) ~(filter : Engine.query_filter)
     (hits : Engine.hit list) : string =
@@ -386,9 +399,9 @@ let side_report (title : string) (uniq : (int * string) list)
 let diff_functions (args : J.t) : J.t =
   match (resolve_side args "a", resolve_side args "b") with
   | Error e, _ | _, Error e -> tool_text ~is_error:true e
-  | Ok (la, ua), Ok (lb, ub) ->
-      let sa = Units.extract ua in
-      let sb = Units.extract ub in
+  | Ok (la, ua, units_a), Ok (lb, ub, units_b) ->
+      let sa = Units.extract_in units_a ua in
+      let sb = Units.extract_in units_b ub in
       let ga =
         Dfg.graph_of
           ~fc:(Dfg.base_cfg_for ua.Units.ulang)
@@ -786,25 +799,18 @@ let call_tool (name : string) (args : J.t) : J.t =
                      hits_text
                        ("drafted `" ^ u.Units.uname ^ "`")
                        ~filter
-                       (query_unit u ~threshold ~top_k ~filter))
+                       (query_unit ~among:units u ~threshold ~top_k ~filter))
               |> String.concat "\n\n---\n\n" |> tool_text))
   | "query_similar" -> (
       match str_arg args "file" with
       | None -> tool_text ~is_error:true "missing required argument: file"
       | Some file -> (
-          let unit =
-            match (int_arg args "line", str_arg args "name") with
-            | Some line, _ -> Units.unit_at file line
-            | None, Some name ->
-                Units.units_of_file file
-                |> List.find_opt (fun (u : Units.unit_info) ->
-                       u.Units.uname = name)
-            | None, None -> (
-                match Units.units_of_file file with u :: _ -> Some u | [] -> None)
-          in
-          match unit with
-          | None -> tool_text ~is_error:true ("no matching function in " ^ file)
-          | Some u ->
+          match
+            unit_in_file file ~line:(int_arg args "line")
+              ~name:(str_arg args "name")
+          with
+          | None, _ -> tool_text ~is_error:true ("no matching function in " ^ file)
+          | Some u, units ->
               let top_k = Option.value (int_arg args "top_k") ~default:5 in
               let threshold =
                 Option.value (float_arg args "threshold") ~default:0.25
@@ -815,7 +821,7 @@ let call_tool (name : string) (args : J.t) : J.t =
                    (Printf.sprintf "`%s` (%s:%d)" u.Units.uname file
                       u.Units.uline_start)
                    ~filter
-                   (query_unit u ~threshold ~top_k ~filter)
+                   (query_unit ~among:units u ~threshold ~top_k ~filter)
                 ^
                 if u.Units.utest && not filter.Engine.q_include_tests then
                   Printf.sprintf

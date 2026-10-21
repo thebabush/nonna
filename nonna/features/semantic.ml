@@ -121,3 +121,21 @@ let extract_parts (fcfg : IL.fun_cfg) : parts =
     float_consts = dedup !floats;
     misc = [ param_count; return_pattern ];
   }
+
+(* Call-target names of a unit (D17): the named and method calls the call
+   surface above hashes, by their last path segment (the IL keeps only that
+   one), deduplicated. Dynamic calls, CallSpecial and constructors carry no
+   name a unit could have. *)
+let call_targets (fcfg : IL.fun_cfg) : string list =
+  Il_util.nodes_in_order fcfg.IL.cfg
+  |> List.filter_map (fun (_, (node : IL.node)) ->
+         match node.IL.n with
+         | IL.NInstr { i = IL.Call (_, fexp, _); _ } -> (
+             match fexp.IL.e with
+             | IL.Fetch { IL.base = IL.Var fn; rev_offset = [] } ->
+                 Some (fst fn.IL.ident)
+             | IL.Fetch { IL.rev_offset = { o = IL.Dot m; _ } :: _; _ } ->
+                 Some (fst m.IL.ident)
+             | _ -> None)
+         | _ -> None)
+  |> List.sort_uniq compare

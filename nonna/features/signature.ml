@@ -6,17 +6,19 @@ type weighted = { hash : Fhash.t; weight : float }
 (* D15 — feature families: groups of features scored as separate weighted
    Jaccards and fused by family weight (ida-similarity style). [Base] holds
    the IL features (DFG, structural, semantic); [Tree] the syntax-subtree
-   hashes (D16, Syntax_tree). Future families (call-graph context) get their
-   own constructor here and in [all_families]. *)
-type family = Base | Tree
+   hashes (D16, Syntax_tree); [Context] the call-graph context (D17): a
+   unit's own Base features with its callees' and enclosing parent's,
+   added in a second pass over the unit set ([with_context]). *)
+type family = Base | Tree | Context
 
-let all_families : family list = [ Base; Tree ]
+let all_families : family list = [ Base; Tree; Context ]
 
 (* position in [all_families] *)
-let family_index (f : family) : int = match f with Base -> 0 | Tree -> 1
+let family_index (f : family) : int =
+  match f with Base -> 0 | Tree -> 1 | Context -> 2
 
 let family_name (f : family) : string =
-  match f with Base -> "base" | Tree -> "tree"
+  match f with Base -> "base" | Tree -> "tree" | Context -> "context"
 
 type t = {
   families : weighted array array;
@@ -28,7 +30,8 @@ type t = {
 }
 
 (* A family past the end of [families] is empty: signatures cached before
-   [Tree] existed hold one array, and still read back as valid. *)
+   [Tree] or [Context] existed hold fewer arrays, and still read back as
+   valid. *)
 let family_features (s : t) (f : family) : weighted array =
   let i = family_index f in
   if i < Array.length s.families then s.families.(i) else [||]
@@ -63,12 +66,22 @@ let override (name : string) (default : float) : float =
 
 (* Fusion weights per family (D15), overridable as "family.<name>" via
    --weights. A family weighted 0 is left out of the fused score.
-   [Tree] is off (0.0) pending the rank sweep (D16). *)
+   [Tree] and [Context] are off (0.0) pending the rank sweep (D16, D17). *)
 let default_family_weight (f : family) : float =
-  match f with Base -> 1.0 | Tree -> 0.0
+  match f with Base -> 1.0 | Tree -> 0.0 | Context -> 0.0
 
 let family_weight (f : family) : float =
   override ("family." ^ family_name f) (default_family_weight f)
+
+(* D17 gates, overridable through --weights like the weights (ida-similarity's
+   onehop_* settings): callees and the enclosing parent each switch on at a
+   value > 0; callees whose own signature holds more than
+   [context.max_callee_features] features are skipped (0 = no gate). *)
+let context_callees () = override "context.callees" 1.0 > 0.
+let context_parent () = override "context.parent" 1.0 > 0.
+
+let context_max_callee_features () =
+  int_of_float (override "context.max_callee_features" 0.)
 
 let string_set_weight () = override "string_set" 0.5
 let string_chunk_weight () = override "string_chunks" 0.2
@@ -105,33 +118,61 @@ let family_seed (f : family) : Fhash.t =
 let salt (f : family) (h : Fhash.t) : Fhash.t =
   if f = Base then h else Fhash.mix (family_seed f) h
 
+(* One family's array from its (hash, weight) lists: the same hash
+   appearing multiple times keeps the max weight; hashes are salted (non-Base
+   families) and sorted. *)
+let family_array (f : family) (lists : (Fhash.t * float) list list) :
+    weighted array =
+  let tbl : (Fhash.t, float) Hashtbl.t = Hashtbl.create 64 in
+  List.iter
+    (List.iter (fun (h, w) ->
+         match Hashtbl.find_opt tbl h with
+         | Some w0 when w0 >= w -> ()
+         | _ -> Hashtbl.replace tbl h w))
+    lists;
+  Hashtbl.fold (fun h w acc -> { hash = salt f h; weight = w } :: acc) tbl []
+  |> List.sort (fun a b -> compare a.hash b.hash)
+  |> Array.of_list
+
+let raw_of (families : weighted array array) : Fhash.t array =
+  Array.concat (Array.to_list families)
+  |> Array.map (fun f -> f.hash)
+  |> Array.to_list |> List.sort_uniq compare |> Array.of_list
+
 (* Build a signature from per-family (hash, weight) lists (a family may
    appear more than once). Within a family the same hash appearing multiple
    times keeps the max weight. *)
 let of_families (parts : (family * (Fhash.t * float) list) list) : t =
-  let dedup (f : family) : weighted array =
-    let tbl : (Fhash.t, float) Hashtbl.t = Hashtbl.create 64 in
-    List.iter
-      (fun (f', all) ->
-        if f' = f then
-          List.iter
-            (fun (h, w) ->
-              match Hashtbl.find_opt tbl h with
-              | Some w0 when w0 >= w -> ()
-              | _ -> Hashtbl.replace tbl h w)
-            all)
-      parts;
-    Hashtbl.fold (fun h w acc -> { hash = salt f h; weight = w } :: acc) tbl []
-    |> List.sort (fun a b -> compare a.hash b.hash)
+  let families =
+    all_families
+    |> List.map (fun f ->
+           family_array f
+             (List.filter_map
+                (fun (f', all) -> if f' = f then Some all else None)
+                parts))
     |> Array.of_list
   in
-  let families = Array.of_list (List.map dedup all_families) in
-  let raw =
-    Array.concat (Array.to_list families)
-    |> Array.map (fun f -> f.hash)
-    |> Array.to_list |> List.sort_uniq compare |> Array.of_list
+  { families; raw = raw_of families }
+
+(* D17: [s] with its [Context] family set to the union of its own Base
+   features and its [neighbours]' (resolved callees, enclosing parent),
+   deduplicated with max weight and salted like any non-Base family. Base
+   hashes are stored unsalted (see [salt]), so they are read back as
+   extracted. Which neighbours count is the caller's job
+   (Units.extract_all): only a second pass over the unit set knows them. *)
+let with_context (s : t) (neighbours : t list) : t =
+  let base (sg : t) =
+    Array.to_list (family_features sg Base)
+    |> List.map (fun w -> (w.hash, w.weight))
   in
-  { families; raw }
+  let ctx = family_array Context (List.map base (s :: neighbours)) in
+  let families =
+    Array.of_list
+      (List.map
+         (fun f -> if f = Context then ctx else family_features s f)
+         all_families)
+  in
+  { families; raw = raw_of families }
 
 (* [lang] selects the per-language base channels (Dfg.base_cfg_for). [body]
    is the function's AST body, which the [Tree] family hashes; it is only
@@ -179,9 +220,14 @@ let extract ?(profile : profile option) ?(lang : Lang.t option)
   in
   of_families [ (Base, all); (Tree, tree) ]
 
-(* Total feature count across families (the min-feature gates). *)
+(* Total feature count across families (the min-feature gates). [Context]
+   is left out: it repeats the unit's own Base features plus its
+   neighbours', which say nothing about how much the unit itself holds, so
+   the gates (and the counts reported) don't move when it is switched on. *)
 let size (s : t) : int =
-  Array.fold_left (fun n fs -> n + Array.length fs) 0 s.families
+  List.fold_left
+    (fun n f -> if f = Context then n else n + Array.length (family_features s f))
+    0 all_families
 
 (* Merge-walk two hash-sorted weighted arrays, folding over the union.
    `f acc weight_in_a weight_in_b` with 0. when absent. *)

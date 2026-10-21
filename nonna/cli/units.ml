@@ -599,10 +599,117 @@ let min_features = 5
 let extract (u : unit_info) : Signature.t =
   Signature.extract ~lang:u.ulang ~body:u.ubody u.ucfg
 
-(* A unit's signature, or None when it is too small to match. *)
+(* A unit's signature, or None when it is too small to match. Context-free:
+   a unit set goes through [signatures] (D17). *)
 let signature (u : unit_info) : Signature.t option =
   let sg = extract u in
   if Signature.size sg < min_features then None else Some sg
+
+let is_lambda (u : unit_info) : bool =
+  String.length u.uname >= 8
+  && String.sub u.uname (String.length u.uname - 8) 8 = "<lambda>"
+
+(* ── Call-graph context (D17) ──────────────────────────────────────────────
+   The [Context] family of a unit holds its own Base features with those of
+   its neighbours in the unit SET being indexed (the workspace, one crate's
+   sigdb, one query file), so it takes a second pass once every unit's own
+   signature exists. Neighbours:
+   - callees: each call-target name (Semantic.call_targets: last path
+     segment, as the call-names channel) resolved to the one unit of the set
+     with that name; names several units share (`new`, `fmt`, `from`) and
+     self-calls resolve to nothing. Gated by [context.max_callee_features].
+   - the enclosing parent of a nested unit (D6): the narrowest named,
+     non-lambda unit of the same file whose lines contain it — the parent a
+     closure's `parent::<lambda>` name gives. Equal line ranges (a one-line
+     fn and its closure) only make a lambda the child.
+   Context is a feature family, not interprocedural matching (D13): each
+   unit is still matched as itself. *)
+let context_neighbours (units : unit_info array) : int -> int list * int list =
+  let by_name : (string, int option) Hashtbl.t = Hashtbl.create 1024 in
+  Array.iteri
+    (fun i u ->
+      Hashtbl.replace by_name u.uname
+        (if Hashtbl.mem by_name u.uname then None else Some i))
+    units;
+  let by_file : (string, int list) Hashtbl.t = Hashtbl.create 256 in
+  Array.iteri
+    (fun i u ->
+      Hashtbl.replace by_file u.ufile
+        (i :: Option.value (Hashtbl.find_opt by_file u.ufile) ~default:[]))
+    units;
+  fun i ->
+    let u = units.(i) in
+    let callees =
+      if not (Signature.context_callees ()) then []
+      else
+        Nonna_features.Semantic.call_targets u.ucfg
+        |> List.filter_map (fun name ->
+               match Hashtbl.find_opt by_name name with
+               | Some (Some j) when j <> i -> Some j
+               | _ -> None)
+    in
+    let parent =
+      if not (Signature.context_parent ()) then []
+      else
+        let encloses p =
+          (not (is_lambda p)) && (not (is_anonymous p.uname))
+          && p.uline_start <= u.uline_start && u.uline_end <= p.uline_end
+          && (is_lambda u
+             || p.uline_start < u.uline_start || u.uline_end < p.uline_end)
+        in
+        Option.value (Hashtbl.find_opt by_file u.ufile) ~default:[]
+        |> List.filter (fun j -> j <> i && encloses units.(j))
+        |> List.sort (fun a b ->
+               compare
+                 (units.(a).uline_end - units.(a).uline_start)
+                 (units.(b).uline_end - units.(b).uline_start))
+        |> function
+        | j :: _ -> [ j ]
+        | [] -> []
+    in
+    (callees, parent)
+
+(* Signatures of a unit set, unconditionally, in order: each unit's own
+   ([extract]) plus, when [family.context] > 0, its [Context] family over
+   the set (above). At weight 0 this is [extract] per unit. *)
+let extract_all (units : unit_info list) : (unit_info * Signature.t) list =
+  let own = List.map (fun u -> (u, extract u)) units in
+  if Signature.family_weight Signature.Context <= 0. then own
+  else
+    let own = Array.of_list own in
+    let neighbours = context_neighbours (Array.map fst own) in
+    let max_callee = Signature.context_max_callee_features () in
+    own
+    |> Array.mapi (fun i (u, sg) ->
+           let callees, parent = neighbours i in
+           let callees =
+             List.filter
+               (fun j ->
+                 max_callee <= 0 || Signature.size (snd own.(j)) <= max_callee)
+               callees
+           in
+           (* a callee that is also the parent counts once *)
+           let js = List.sort_uniq compare (callees @ parent) in
+           (u, Signature.with_context sg (List.map (fun j -> snd own.(j)) js)))
+    |> Array.to_list
+
+(* [extract_all] gated like [signature]: None when a unit is too small to
+   match (Signature.size leaves Context out, so the gate is the unit's own).
+   Every set-level index build goes through here. *)
+let signatures (units : unit_info list) : (unit_info * Signature.t option) list
+    =
+  extract_all units
+  |> List.map (fun (u, sg) ->
+         (u, if Signature.size sg < min_features then None else Some sg))
+
+(* One unit's signature with its context resolved among [units] (the query
+   file's, for single-query paths); [u] must be one of them (physically). *)
+let extract_in (units : unit_info list) (u : unit_info) : Signature.t =
+  if Signature.family_weight Signature.Context <= 0. then extract u
+  else
+    match List.assq_opt u (extract_all units) with
+    | Some sg -> sg
+    | None -> snd (List.hd (extract_all [ u ]))
 
 (* The one place an Engine.meta is built from a unit. *)
 let meta_of (u : unit_info) : Engine.meta =
@@ -614,10 +721,6 @@ let meta_of (u : unit_info) : Engine.meta =
     code_lines = u.ucode_lines;
     is_test = u.utest;
   }
-
-let is_lambda (u : unit_info) : bool =
-  String.length u.uname >= 8
-  && String.sub u.uname (String.length u.uname - 8) 8 = "<lambda>"
 
 (* The narrowest NAMED fn-unit containing a (1-based) line; falls back to
    the narrowest lambda. *)
@@ -631,8 +734,6 @@ let unit_at_in (units : unit_info list) (line : int) : unit_info option =
   match List.find_opt (fun u -> not (is_lambda u)) containing with
   | Some u -> Some u
   | None -> ( match containing with u :: _ -> Some u | [] -> None)
-
-let unit_at path line = unit_at_in (units_of_file path) line
 
 (* Parse editor buffers without changing the user's file. Keep the real
    document path in metadata so exclusions and related locations agree. *)
@@ -667,12 +768,12 @@ let index_units (units : unit_info list) :
     Engine.t * (unit_info * Signature.t) list =
   let b = Engine.create () in
   let kept =
-    units
-    |> List.filter_map (fun u ->
+    signatures units
+    |> List.filter_map (fun (u, sg) ->
            Option.map
              (fun sg ->
                ignore (Engine.add b (meta_of u) sg);
                (u, sg))
-             (signature u))
+             sg)
   in
   (Engine.freeze b, kept)

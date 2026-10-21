@@ -431,9 +431,12 @@ let rank ?(ranks_out : string option) (pairs_file : string)
   let bld = Engine.create () in
   let fid_of : (string * int, int) Hashtbl.t = Hashtbl.create 8192 in
   let sig_of : (int, Signature.t) Hashtbl.t = Hashtbl.create 8192 in
-  Units.units_of_paths corpus_paths
-  |> List.iter (fun (u : Units.unit_info) ->
-         Units.signature u
+  (* call-graph context (D17) resolves within each corpus path (one crate
+     dir each, as a crate's sigdb would), not across crate versions *)
+  corpus_paths
+  |> List.concat_map (fun p -> Units.signatures (Units.units_of_paths [ p ]))
+  |> List.iter (fun ((u : Units.unit_info), sg) ->
+         sg
          |> Option.iter (fun sg ->
                 let fid = Engine.add bld (Units.meta_of u) sg in
                 Hashtbl.replace fid_of
@@ -587,10 +590,9 @@ let eval ?(scores_out : string option) (pairs_file : string) =
       | None ->
           let t = Hashtbl.create 16 in
           (try
-             Units.units_of_file file
-             |> List.iter (fun (u : Units.unit_info) ->
-                    Hashtbl.replace t u.Units.uline_start
-                      (Units.extract u))
+             Units.extract_all (Units.units_of_file file)
+             |> List.iter (fun ((u : Units.unit_info), sg) ->
+                    Hashtbl.replace t u.Units.uline_start sg)
            with _ -> ());
           Hashtbl.replace cache file t;
           t

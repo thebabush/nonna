@@ -143,11 +143,12 @@ let line_range (line0 : int) : J.t =
       ("end", `Assoc [ ("line", `Int line0); ("character", `Int 999) ]);
     ]
 
+(* Call-graph context (D17) of a document's units resolves within the
+   document, as does the index entry [replace_file] writes for it. *)
 let diagnostics_for (uri : string) : J.t list =
-  document_units uri
-  |> List.filter_map (fun (u : Units.unit_info) ->
-         Check.matches !engine u
-           (Units.extract u)
+  Units.extract_all (document_units uri)
+  |> List.filter_map (fun ((u : Units.unit_info), sg) ->
+         Check.matches !engine u sg
          |> function
            | [] -> None
            | best :: _ as hits ->
@@ -254,10 +255,11 @@ let function_text (uri : string) (line0 : int) : J.t =
    narrowest named fn-unit containing it and return ranked matches. Lower
    threshold than diagnostics — this is an explicit request, show more. *)
 let find_similar (uri : string) (line0 : int) : J.t =
-  match Units.unit_at_in (document_units uri) (line0 + 1) with
+  let units = document_units uri in
+  match Units.unit_at_in units (line0 + 1) with
   | None -> `Assoc [ ("query", `Null); ("hits", `List []) ]
   | Some u ->
-      let sg = Units.extract u in
+      let sg = Units.extract_in units u in
       let hits =
         let self_m = Units.meta_of u in
         Engine.query !engine sg ~threshold:0.2 ~max_results:15 ~accept:(fun m ->

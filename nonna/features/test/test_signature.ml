@@ -89,4 +89,38 @@ let () =
   Signature.set_weight "family.base" 0.7;
   run ();
   Hashtbl.reset Signature.weight_overrides;
+  (* D17: the Context family is the salted, max-weight union of the own and
+     neighbours' Base features; it leaves Base, raw's Base part and size
+     alone, and is fused like any family *)
+  let own = Signature.of_families [ (Signature.Base, [ (1, 1.0); (2, 0.3) ]) ]
+  and callee = Signature.of_families [ (Signature.Base, [ (2, 0.8); (3, 0.5) ]) ] in
+  let c = Signature.with_context own [ callee ] in
+  let ctx = Signature.family_features c Signature.Context in
+  check "context: base untouched"
+    (Signature.family_features c Signature.Base
+    = Signature.family_features own Signature.Base);
+  check "context: own + neighbour, deduplicated max weight"
+    (List.sort compare
+       (Array.to_list
+          (Array.map (fun (w : Signature.weighted) -> w.Signature.weight) ctx))
+    = [ 0.5; 0.8; 1.0 ]);
+  check "context: salted"
+    (Array.for_all
+       (fun (w : Signature.weighted) -> not (List.mem w.Signature.hash [ 1; 2; 3 ]))
+       ctx);
+  check "context: in raw" (Array.length c.Signature.raw = 2 + 3);
+  check "context: size leaves it out" (Signature.size c = Signature.size own);
+  let other = Signature.with_context own [] in
+  check "context: weight 0 scores as before"
+    (Signature.jaccard c other = Signature.jaccard own own);
+  Signature.set_weight "family.context" 0.5;
+  (* base 1.0 (identical: J = 1), context 0.5 *)
+  check "context: fused by family weight"
+    (Signature.jaccard c other
+    = ((1.0 *. 1.0)
+      +. 0.5
+         *. Signature.family_jaccard ctx
+              (Signature.family_features other Signature.Context))
+      /. 1.5);
+  Hashtbl.reset Signature.weight_overrides;
   if !fails > 0 then exit 1

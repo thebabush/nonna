@@ -159,7 +159,12 @@ binding in-switch; only collision rate matters), 62-bit non-negative ints.
   function by the engine's own definition. (Closure grafting is NOT interprocedural —
   one source-level function either way.) Duplicated blocks inside otherwise
   different functions are listed (`dupes --blocks`, D16) but scored only
-  within each unit's own Tree family: no cross-function scoring.
+  within each unit's own Tree family: no cross-function scoring. *Amended
+  by D17:* call-graph context is a feature *family*, not interprocedural
+  matching — a function is still matched as one unit, against other units;
+  its callees' and enclosing parent's features only add evidence to its
+  own signature. A body moved into a helper is still a different
+  function.
 - **D14 — Structural hashing is the baseline; names/values/types are channels.**
   Seed hashes contain no identifier strings, literal values, type descriptors or
   param positions by default — only operator kinds, call kinds, arities,
@@ -186,7 +191,7 @@ binding in-switch; only collision rate matters), 62-bit non-negative ints.
   ida-similarity scores a function's own features and its context as two
   Jaccards (0.5/0.5), which beats one Jaccard over the union. *(shipped as
   plumbing first: `Base` held every feature, so scores were bit-identical;
-  the syntax-subtree family followed as D16, call-graph context comes next)*
+  the syntax-subtree family followed as D16, call-graph context as D17)*
 - **D16 — Syntax-subtree family + block clones** *(default off pending
   sweep)*. `Syntax_tree` hashes every statement subtree of a function body,
   at every depth, from the generic AST after naming and implicit-return
@@ -228,6 +233,54 @@ binding in-switch; only collision rate matters), 62-bit non-negative ints.
   copies differ in a callee (6), a field name (6) or an enum variant / type
   path (7) — the merges D14 says not to make. A `match` ends a line early
   in the listing: the generic AST keeps no closing brace for it.
+
+- **D17 — Call-graph context family** *(default off pending sweep)*. After
+  ida-similarity's one-hop context: thin wrappers and one-line predicates
+  look alike structurally, and what tells them apart is what they call and
+  where they live. **`Context` family**: the max-weight union of a unit's
+  own Base features, its callees' and (for a nested unit) its enclosing
+  parent's, salted as a family (D15) so it never coincides with Base;
+  scored as its own Jaccard and fused with Base (ida-similarity: two
+  Jaccards beat one over the union). Neighbours come from a **second pass
+  over the unit set being indexed** (`Units.extract_all` / `signatures`,
+  after every unit's own signature exists), so the resolution scope is
+  that set: the workspace within the workspace (`dupes`, MCP/LSP workspace
+  index, `check`'s disk index), each dep's sigdb within that dep, `rank`
+  within each corpus path (one crate-version dir; never across versions).
+  *Callees*: each call-target name (`Semantic.call_targets`: named and
+  method calls, last path segment, as the call-names channel) resolved to
+  the one unit of the set with that name; ambiguous names (`new`, `fmt`,
+  `from`, any two methods sharing a name) and self-calls resolve to
+  nothing; no second hop (callees2 measured worse there), no callers (they
+  help there only behind a fan-in gate). *Parent*: the narrowest named,
+  non-lambda unit of the same file whose lines contain the unit — the
+  parent a closure's `parent::<lambda>` name (D6) gives; nested named
+  closures and nested fns get one too; equal line ranges only make a
+  lambda the child. Nested lambdas take the named fn, not the outer
+  lambda. Knobs, as `--weights` overrides (no rebuild; part of the sigdb
+  weight digest): `family.context` (0 = off, extracted only when > 0),
+  `context.callees` / `context.parent` (on at > 0, default on),
+  `context.max_callee_features` (callees with a larger own signature are
+  skipped; 0 = no gate, the default). `Signature.size` leaves Context out:
+  min-feature gates and reported counts are the unit's own. **Single-query
+  paths** (`query`'s draft, MCP `find_similar`/`query_similar`/
+  `diff_functions`, LSP diagnostics/find-similar and on-change index
+  entries, `check`'s changed units) resolve within the query file or
+  snippet only, not the index: a workspace unit queried by file carries
+  less context than its indexed copy. Default outputs are byte-identical
+  (marghera `dupes -t 0.5 --tests` and `--blocks`), `Sigdb.format_version`
+  stays 7 (a default signature gains one empty array; old caches read the
+  missing family as empty). Fixture (`tests/context`, base 1.0 + context
+  0.5): one-body wrappers over dissimilar callees 0.672 → 0.498, over
+  renamed-copy callees 0.672 → 0.736; one closure in two dissimilar
+  parents 1.000 → 0.772. Marghera (`dupes -t 0.5 --tests -n 1000000`,
+  `family.context=0.5`): 23,100 → 12,445 pairs, j ≥ 0.999 9,153 → 1,328,
+  same 4,651 units; sanity unchanged (its functions call nothing in-set).
+  Cost: the second pass is ~0.3 s of 5.6 s indexing; the full `dupes` run
+  goes 17.4 → 36.2 s, almost all in the pair scan (a bigger `raw`, so
+  more candidates, and two families scored per pair). Note
+  `family.context=0.5` fuses 2:1 with Base; ida-similarity's 0.5/0.5 is
+  `family.context=1`.
 
 ## Evaluation
 
@@ -378,10 +431,12 @@ oracle is Rust-only (N8); evolved_major's low tail is genuine rewrites.
 nonna/
   features/  nonna_features   # fhash, il_util, dfg (graph + grafting + φ),
                               # structural, semantic, signature (profiles,
-                              # families + fused scoring, D15), syntax_tree
-                              # (subtree hashes, D16)
+                              # families + fused scoring, D15; context
+                              # family, D17), syntax_tree (subtree hashes,
+                              # D16)
   index/     nonna_index      # engine: inverted index + jaccard/containment rank
-  cli/       (executable)     # main (commands/flags), units (enumeration),
+  cli/       (executable)     # main (commands/flags), units (enumeration,
+                              # context second pass, D17),
                               # blocks (dupes --blocks, D16),
                               # bench (mine/eval/rank), viz (DOT), corpus (cargo+std),
                               # sigdb (caches), lsp_server, mcp_server

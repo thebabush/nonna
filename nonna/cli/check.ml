@@ -305,7 +305,15 @@ let run ~(staged : bool) ~(base : string option) ~(deps : bool)
   if staged then List.iter (fun (_, us) -> List.iter add (Corpus.entries_of_units us)) changed;
   if deps then ignore (Corpus.add_deps b root);
   let eng = Engine.freeze b in
-  let sig_of (u : Units.unit_info) = Units.extract u in
+  (* a changed unit's call-graph context (D17) resolves within its file's
+     version (new or old), not the index; the file's other units are only
+     extracted when that family is on *)
+  let sigs_of (units : Units.unit_info list) =
+    let sigs = lazy (Units.extract_all units) in
+    fun (u : Units.unit_info) ->
+      if Signature.family_weight Signature.Context <= 0. then Units.extract u
+      else List.assq u (Lazy.force sigs)
+  in
   let checked = ref 0 in
   let findings =
     changed
@@ -318,6 +326,7 @@ let run ~(staged : bool) ~(base : string option) ~(deps : bool)
                  | Some text -> units_of_text ~path:(abs c.path) text
                  | None -> [])
            in
+           let sig_of = sigs_of units and old_sig_of = sigs_of old_units in
            units
            |> List.filter (touches c.ranges)
            |> List.filter_map (fun (u : Units.unit_info) ->
@@ -330,7 +339,8 @@ let run ~(staged : bool) ~(base : string option) ~(deps : bool)
                   (* what the previous version already resembled *)
                   let known =
                     previous
-                    |> List.concat_map (fun o -> matches ~threshold eng o (sig_of o))
+                    |> List.concat_map (fun o ->
+                           matches ~threshold eng o (old_sig_of o))
                     |> List.map (fun (h : Engine.hit) ->
                            (h.Engine.meta.Engine.file, h.Engine.meta.Engine.name))
                   in

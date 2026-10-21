@@ -113,13 +113,13 @@ let cache_dir () : string =
   mkdirs dir;
   dir
 
-(* Signatures of the units big enough to index. *)
+(* Signatures of the units big enough to index, call-graph context (D17)
+   resolved within [units]: a dep's sigdb within that dep, the workspace
+   within the workspace. *)
 let entries_of_units (units : Units.unit_info list) : Sigdb.entry list =
-  units
-  |> List.filter_map (fun (u : Units.unit_info) ->
-         Option.map
-           (fun sg -> { Sigdb.meta = Units.meta_of u; sg })
-           (Units.signature u))
+  Units.signatures units
+  |> List.filter_map (fun ((u : Units.unit_info), sg) ->
+         Option.map (fun sg -> { Sigdb.meta = Units.meta_of u; sg }) sg)
 
 (* Index an explicit file list (the workspace, after the .nonna path scope
    has been applied) or a whole directory (deps). *)
