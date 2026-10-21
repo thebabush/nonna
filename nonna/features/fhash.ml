@@ -72,6 +72,14 @@ module Feed = struct
     to62 (fnv_string fnv_offset (Buffer.contents t.buf))
 end
 
+(* A tag byte followed by ints, as one hash (Structural's histograms,
+   Syntax_tree's edges and n-grams). *)
+let of_ints (tagv : int) (ints : int list) : t =
+  let f = Feed.create () in
+  Feed.tag f tagv;
+  List.iter (Feed.int f) ints;
+  Feed.finish f
+
 (* Hash with one of K seeded "permutations" (for MinHash). *)
 let permute ~(seed : int64) (x : t) : t =
   to62 (mix64 (Int64.logxor (Int64.of_int x) seed))

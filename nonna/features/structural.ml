@@ -9,11 +9,7 @@ let bucket (v : int) (thresholds : int list) : int =
   in
   go 0 thresholds
 
-let hash_of (tagv : int) (ints : int list) : Fhash.t =
-  let f = Fhash.Feed.create () in
-  Fhash.Feed.tag f tagv;
-  List.iter (Fhash.Feed.int f) ints;
-  Fhash.Feed.finish f
+let hash_of = Fhash.of_ints
 
 (* Count back edges via iterative DFS (gray-node detection). *)
 let back_edge_count (cfg : IL.cfg) : int =

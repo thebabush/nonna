@@ -565,11 +565,6 @@ let shape_feed (label : Fhash.t) (kids : Fhash.t list) : Fhash.t =
     kids;
   Fhash.Feed.finish f
 
-let seq_feed (tag : int) (hs : Fhash.t list) : Fhash.t =
-  let f = Fhash.Feed.create () in
-  Fhash.Feed.tag f tag;
-  List.iter (Fhash.Feed.int f) hs;
-  Fhash.Feed.finish f
 
 (* flake's log_counts: a hash seen c times also yields (hash, 2^i) for
    every 2^i <= c, i >= 1, so repeats count without becoming a bag. *)
@@ -608,7 +603,7 @@ let kind_features (cfg : config) (body : G.stmt) : (Fhash.t * float) list =
     done;
     if cfg.edges then
       List.iter
-        (fun c -> extra (seq_feed 0xD2 [ n.label; c.label ]) cfg.w_edge)
+        (fun c -> extra (Fhash.of_ints 0xD2 [ n.label; c.label ]) cfg.w_edge)
         n.kids;
     if cfg.ngrams > 0 && n.is_block then begin
       let toks = Array.of_list (List.map (fun (s, _) -> s.(1)) kids) in
@@ -616,7 +611,7 @@ let kind_features (cfg : config) (body : G.stmt) : (Fhash.t * float) list =
       for k = 1 to cfg.ngrams do
         for i = 0 to len - k do
           extra
-            (seq_feed 0xD3 (k :: Array.to_list (Array.sub toks i k)))
+            (Fhash.of_ints 0xD3 (k :: Array.to_list (Array.sub toks i k)))
             (cfg.w_ngram *. float_of_int k)
         done
       done
