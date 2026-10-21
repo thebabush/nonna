@@ -116,8 +116,9 @@ include = crates/, src/   # or: only index files whose path contains one of thes
 The
 corpus root is indexed at startup (workspace plus cargo deps + std
 from per-`crate@version` caches under `~/.cache/nonna/sigdb` — first dep index
-~1 min, warm loads < 0.5 s). Results say when the index is still incomplete;
-`status` shows its state.
+~1 min, warm loads < 0.5 s). The workspace is queryable as soon as it is
+indexed, before the deps; results say when the index is still incomplete,
+and `status` shows its state.
 Subsequent tool and explorer requests check workspace and local dependency
 contents and refresh the index when files change. Registry/Git dependency
 caches are separated by resolved source and source directory.

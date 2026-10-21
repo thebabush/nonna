@@ -136,7 +136,10 @@ let workspace_stamp root deps =
            try Some (Digest.to_hex (Digest.file file))
            with Sys_error _ -> None ))
 
-let build_snapshot root deps =
+(* [on_workspace] gets a workspace-only snapshot as soon as the workspace is
+   indexed, before any dependency: a cold dependency index takes minutes,
+   and the agent's own code is what it queries most. *)
+let build_snapshot ?(on_workspace = fun _ -> ()) root deps =
   let stamp = workspace_stamp root deps in
   let workspace = Corpus.index_files (Workspace.files [ root ]) in
   let files = Hashtbl.create 256 in
@@ -146,6 +149,7 @@ let build_snapshot root deps =
   let b = Engine.create () in
   let add (e : Sigdb.entry) = ignore (Engine.add b e.meta e.sg) in
   List.iter add workspace;
+  on_workspace (Engine.freeze b, List.length workspace, stamp);
   List.iter
     (fun dep ->
       let entries =
@@ -194,7 +198,10 @@ let index_async root =
          (fun () ->
            (try
               let deps = Corpus.dependencies root in
-              let snapshot = build_snapshot root deps in
+              let snapshot =
+                build_snapshot root deps ~on_workspace:(fun ws ->
+                    with_dispatch (fun () -> install_snapshot deps ws))
+              in
               with_dispatch (fun () -> install_snapshot deps snapshot)
             with e ->
               prerr_endline
@@ -343,7 +350,14 @@ let hits_text (label : string) ~(filter : Engine.query_filter)
            !workspace_test_fns
        else "")
   else
-    Printf.sprintf "Functions similar to %s:\n\n%s" label
+    Printf.sprintf "Functions similar to %s:%s\n\n%s" label
+      (* matches found mid-indexing are real but maybe not the best ones *)
+      (if !indexing_done then ""
+       else
+         Printf.sprintf
+           " (indexing is still running, %d functions so far: a better match \
+            may not be indexed yet)"
+           (Engine.size !engine))
       (String.concat "\n\n" (List.map hit_block hits))
 
 (* ── diff_functions: signature algebra ───────────────────────────────────── *)
