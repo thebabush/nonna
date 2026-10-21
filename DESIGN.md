@@ -325,7 +325,16 @@ binding in-switch; only collision rate matters), 62-bit non-negative ints.
   case dominates; within one snapshot (dupes, reuse queries against the
   current workspace) only the first exists, so callees stay a candidate for
   dupes precision, off for now. Callers are not implemented (they helped
-  ida-similarity only behind a fan-in gate).
+  ida-similarity only behind a fan-in gate). Two failure mechanisms, read
+  from the source: (1) *callers outrank the callee*: a caller's Context
+  holds its callee's features, so a small query is ~fully contained in
+  every caller's context (cc `is_zig_cc` ranks its own caller
+  `with_features` first: j 0.16, c 0.92 under max(j,c)); scoring Context
+  by Jaccard only, or leaving it out of containment, would fix this one.
+  (2) *same-snapshot siblings win*: fancy-regex test
+  `is_literal_with_repeat` loses to its sibling `is_literal` in the same
+  version, which shares the callees exactly, while the true match's
+  `analyze` callee was rewritten.
 
 - **D18 — Clone classes** (`dupes --classes`, MCP `find_duplicates`
   `group: true`). Pair lists grow O(n²) in families of near-identical
