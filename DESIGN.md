@@ -313,6 +313,19 @@ binding in-switch; only collision rate matters), 62-bit non-negative ints.
   −0.002) and removes 11,288 marghera pairs, 99.6% of them with a closure
   side: the same small closure in unrelated parents, the one-line-closure
   noise the workspace was first reported for.
+  **Callees, qualitatively** (callees-only vs off, pairs ranked top-5 by
+  either): 27 move up, 88 down; 13 reach rank 1, 56 lose it. Where they
+  help, the target has a structural twin that calls different things:
+  aws-lc-rs `RsaParameters::verify_digest` (3 → 1) was outranked by its
+  mirror `sign_digest` until `verify_rsa_digest_signature` vs the signing
+  helpers told them apart; likewise `shl_limb` vs `shl_vartime`, `poll` vs
+  `flush_plaintext`. Where they fail, the function barely changed but its
+  callees did: cc `is_zig_cc` (1 → 6, j 1.000 → 0.800) after `run_output`
+  was rewritten between versions. On a version-mined benchmark the second
+  case dominates; within one snapshot (dupes, reuse queries against the
+  current workspace) only the first exists, so callees stay a candidate for
+  dupes precision, off for now. Callers are not implemented (they helped
+  ida-similarity only behind a fan-in gate).
 
 - **D18 — Clone classes** (`dupes --classes`, MCP `find_duplicates`
   `group: true`). Pair lists grow O(n²) in families of near-identical
