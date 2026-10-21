@@ -233,6 +233,22 @@ binding in-switch; only collision rate matters), 62-bit non-negative ints.
   copies differ in a callee (6), a field name (6) or an enum variant / type
   path (7) — the merges D14 says not to make. A `match` ends a line early
   in the listing: the generic AST keeps no closing brace for it.
+  **Weight sweep (2026-10-21), kept off.** Rank = the 300 crate-version,
+  2,196-pair corpus; marghera = `dupes -t 0.5 --tests`; scb = the 187
+  scb-check function-clone pairs found at max(j,c) ≥ 0.5 / j ≥ 0.9.
+
+  | family.tree | evolved MRR | evolved_major | renamed | ALL | marghera pairs | named j=1 | scb | sanity |
+  |---|---|---|---|---|---|---|---|---|
+  | 0 (default) | 0.921 | 0.814 | 0.978 | 0.868 | 23,100 | 1,018 | 174 / 50 | 16/16 |
+  | 0.07 | 0.925 | 0.814 | 0.973 | 0.868 | 22,288 | 420 | 175 / 44 | 16/16 |
+  | 0.2 | 0.931 | 0.814 | 0.948 | 0.867 | 21,260 | 420 | 169 / 38 | 12/16 |
+  | 0.35 | 0.924 | 0.810 | 0.931 | 0.860 | 20,390 | 420 | 158 / 34 | 12/16 |
+  | 0.5 | 0.920 | 0.806 | 0.926 | 0.856 | 19,924 | 420 | 157 / 34 | 12/16 |
+
+  No weight beats ALL; evolved gains (+0.010 at 0.2) are paid by renamed,
+  likely because Tree keeps type and path names the miner's renamed pairs
+  change (Base ignores types). The value of D16 is `--blocks`; a Tree
+  variant hashing type/path names to their kind is the next thing to try.
 
 - **D17 — Call-graph context family** *(default off pending sweep)*. After
   ida-similarity's one-hop context: thin wrappers and one-line predicates
@@ -281,6 +297,22 @@ binding in-switch; only collision rate matters), 62-bit non-negative ints.
   more candidates, and two families scored per pair). Note
   `family.context=0.5` fuses 2:1 with Base; ida-similarity's 0.5/0.5 is
   `family.context=1`.
+  **Sweep (2026-10-21)**, same columns as D16's:
+
+  | context | evolved MRR | evolved_major | renamed | ALL | marghera pairs | named j=1 | scb | sanity |
+  |---|---|---|---|---|---|---|---|---|
+  | off (default) | 0.921 | 0.814 | 0.978 | 0.868 | 23,100 | 1,018 | 174 / 50 | 16/16 |
+  | 0.5, parent only | 0.918 | 0.813 | 0.974 | 0.866 | 12,415 | 994 | 174 / 47 | 16/16 |
+  | 0.5, callees only | 0.921 | 0.795 | 0.970 | 0.856 | 19,312 | 1,018 | 167 / 56 | 16/16 |
+  | 0.25, both | 0.920 | 0.803 | 0.969 | 0.860 | 13,285 | 994 | 175 / 55 | 16/16 |
+  | 0.5, both | 0.919 | 0.794 | 0.966 | 0.854 | 12,445 | 994 | 167 / 53 | 16/16 |
+  | 1.0, both | 0.915 | 0.774 | 0.964 | 0.841 | 12,462 | 994 | 162 / 66 | 16/16 |
+
+  Callees cost ranking (evolved_major −0.019 at 0.5): across versions a
+  function's callees evolve with it. The parent is nearly free on rank (ALL
+  −0.002) and removes 11,288 marghera pairs, 99.6% of them with a closure
+  side: the same small closure in unrelated parents, the one-line-closure
+  noise the workspace was first reported for.
 
 - **D18 — Clone classes** (`dupes --classes`, MCP `find_duplicates`
   `group: true`). Pair lists grow O(n²) in families of near-identical
