@@ -36,6 +36,18 @@ check "dupes: exactly one high-sim pair in fixtures" "[ \"\$DUPES\" = 1 ]"
 NOTESTS=$("$BIN" dupes tests/fixtures spike -t 0.9 | grep -c '<->')
 check "dupes: test-path units skipped by default" "[ \"\$NOTESTS\" = 0 ]"
 
+# Rust macro arguments are reparsed: assert-only tests that call different
+# functions no longer share a signature; renamed copies still match.
+MAC=$("$BIN" dupes tests/macros -t 0.0 --tests --min-features 1)
+MAC_SAME=$(echo "$MAC" | grep 'token_cases ' | grep 'token_cases_again ' | awk '{print $2}')
+check "macros: renamed assert-only copy still matches (j >= 0.95)" \
+  "[ -n \"\$MAC_SAME\" ] && awk -v x=\"\$MAC_SAME\" 'BEGIN{exit !(x >= 0.95)}'"
+MAC_DIFF=$(echo "$MAC" | grep 'path_cases ' | grep 'token_cases ' | awk '{print $2}' | sort -rn | head -1)
+check "macros: different callees do not collapse (j < 0.6)" \
+  "[ -z \"\$MAC_DIFF\" ] || awk -v x=\"\$MAC_DIFF\" 'BEGIN{exit !(x < 0.6)}'"
+check "macros: unparseable token trees are indexed" \
+  "echo \"\$MAC\" | grep -q 'indexed 4 units'"
+
 # check: a throwaway repo with util.rs committed; draft.rs's avg copies mean.
 ABS_BIN=$PWD/$BIN
 REPO=$(mktemp -d)

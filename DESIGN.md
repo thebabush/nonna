@@ -54,8 +54,13 @@ Accepted costs: no SSA (we add reaching-defs + φ ourselves — see D12), no
 at a pinned fork point, as a git submodule).
 
 Known substrate caveats (measured):
-- printf-style macros (`format!`) lower to `FixmeExp` — name + token bag survive,
-  internal dataflow doesn't. Low rate in practice; graceful degradation.
+- Rust macro arguments that are not single tokens or dotted paths
+  (`assert_eq!(f(x), "a")`) lower to `FixmeExp` — name + token bag survive,
+  internal dataflow doesn't. *Not* low-rate in test code: assert-only tests
+  collapsed to one signature (455 of 641 distinct test pairs at j = 1.00 in a
+  62k-SLOC workspace). `Units.reparse_rust_macro_args` now reparses `()`/`[]`
+  token trees as expressions before naming (see the findings log); `{}` macros
+  and token trees that don't parse keep the bag.
 - `else if`-as-expression also produces a `FixmeExp` for the result temp (control
   structure itself lowers fine).
 - ~18 std files fail to parse (rustc 1.93 syntax newer than the vendored grammar).
@@ -294,6 +299,20 @@ oracle is Rust-only (N8); evolved_major's low tail is genuine rewrites.
   opposite — names lower absolute scores but raise relative rank.
 - **Record construction is a mono-hash** (one added struct field → j 0.39 on
   otherwise-identical fns): per-field sub-features are a known, unimplemented lever.
+- **Rust macro arguments reparsed** (2026-10-21; found by comparing `dupes`
+  with scb-check's exact AST-hash clones). Opengrep keeps a macro's token tree
+  as an opaque ArgMacro bag unless every argument is a single token or path,
+  so `assert_eq!(linux_file_token(..), "..")` and `assert_eq!(codeview_path(..),
+  "")` hashed identically. A pre-naming AST pass copies each such `()`/`[]`
+  token tree, at its own byte offsets, into a blank copy of the file wrapped
+  as statements of one synthetic fn, parses that with the Rust parser and
+  splices the expressions back in as arguments (positions carry over; parse
+  errors drop the region they point at, then bisect). Marghera (`dupes -t 0.5
+  --tests`, named fns): j = 1.00 pairs 2,569 → 1,018; nonna-only j ≥ 0.9 pairs
+  vs scb 773 → 39. Rank (300 crate-versions, 2,196 pairs): ALL MRR 0.868 →
+  0.868; evolved 0.925 → 0.921, evolved_major 0.811 → 0.814 (r@5 0.883 →
+  0.898, r@10 0.905 → 0.920), renamed 0.978 flat. Cost: +24% on marghera,
+  none measured on a 20-crate registry sample. `Sigdb.format_version = 6`.
 - Cross-language matching is weak (idiom lowering differs); loop-style changes
   (foreach ↔ index-while) are an honest cliff. Both measured, neither a goal.
 

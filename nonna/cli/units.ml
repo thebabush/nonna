@@ -130,6 +130,237 @@ let normalize_ocaml (ast : G.program) : G.program =
   in
   List.map (fun st -> v#visit_stmt () st) ast
 
+(* ── Rust macro arguments ──────────────────────────────────────────────────
+   Opengrep turns a macro's token tree into arguments only when every argument
+   is a single token or a dotted path; anything else (`assert_eq!(f(x), "a")`)
+   becomes an opaque ArgMacro bag, lowered to FixmeExp with no dataflow. Two
+   assert-only tests then share one signature whatever they call: in a 62k-SLOC
+   workspace, 455 of 641 distinct test pairs at jaccard 1.00 were that collapse.
+
+   Re-parse those token trees as expressions. All macro regions of a file are
+   copied, at their own byte offsets, into a blank copy of the file (newlines
+   kept), each turned into an expression statement of one synthetic fn: the
+   reparsed tokens then carry the original positions, and only the file name
+   needs fixing. When the parse reports errors, the regions they fall in are
+   dropped and the rest parsed again (bisecting if errors remain); a region
+   that fails keeps its bag. `{}`-delimited macros (DSLs, json!) are left
+   alone. Nested bags are handled by further rounds. *)
+
+let is_arg_macro (args : G.argument list) : bool =
+  match args with [ G.OtherArg (("ArgMacro", _), _) ] -> true | _ -> false
+
+let macro_regions (ast : G.program) : (int * int) list =
+  let regions = ref [] in
+  let v =
+    object
+      inherit [_] G.iter_no_id_info as super
+
+      method! visit_expr env e =
+        match e.G.e with
+        | G.Call ({ e = G.N n; _ }, (l, args, r))
+          when is_arg_macro args
+               && String.ends_with ~suffix:"!"
+                    (match n with
+                    | G.Id ((s, _), _) -> s
+                    | G.IdQualified { G.name_last = (s, _), _; _ } -> s)
+               && Tok.is_origintok l && Tok.is_origintok r
+               && List.mem (Tok.content_of_tok l) [ "("; "[" ] ->
+            regions := (Tok.bytepos_of_tok l, Tok.bytepos_of_tok r) :: !regions
+        | _ -> super#visit_expr env e
+    end
+  in
+  v#visit_program () ast;
+  List.sort_uniq compare !regions
+
+(* Parse [regions] of [src] in place (all into one synthetic file). Either
+   every region's expression, keyed by region start, or the regions the
+   parse errors fall in (an error in the blank gap after a region counts
+   against that region). *)
+type parse_outcome =
+  | Parsed of (int * G.expr) list
+  | Bad of (int * int) list
+
+let parse_regions ~(file : string) (src : string) (regions : (int * int) list)
+    : parse_outcome =
+  let n = String.length src in
+  let usable =
+    List.filter (fun (s, e) -> s >= 1 && e < n && src.[s - 1] <> '\n') regions
+  in
+  (* the wrapper header needs 8 newline-free bytes before the first region's
+     `;` slot *)
+  let header = "fn _x(){" in
+  let hl = String.length header in
+  let header_at =
+    match usable with
+    | [] -> None
+    | (s0, _) :: _ ->
+        let rec find i =
+          if i + hl > s0 - 1 then None
+          else
+            match String.index_from_opt src i '\n' with
+            | Some j when j < i + hl -> find (j + 1)
+            | _ -> Some i
+        in
+        find 0
+  in
+  match header_at with
+  | None -> Bad regions
+  | Some h -> (
+      let buf =
+        Bytes.map (fun c -> if c = '\n' then '\n' else ' ') (Bytes.of_string src)
+      in
+      Bytes.blit_string header 0 buf h hl;
+      List.iter
+        (fun (s, e) ->
+          Bytes.set buf (s - 1) ';';
+          Bytes.blit_string src s buf s (e - s + 1))
+        usable;
+      let text = Bytes.to_string buf ^ ";}" in
+      let tmp = Filename.temp_file "nonna_macros" ".rs" in
+      let region_at b =
+        List.fold_left
+          (fun acc ((s, _) as r) -> if s - 1 <= b then Some r else acc)
+          None usable
+      in
+      let line_starts =
+        let starts = ref [ 0 ] in
+        String.iteri (fun i c -> if c = '\n' then starts := (i + 1) :: !starts) src;
+        Array.of_list (List.rev !starts)
+      in
+      let bytepos_of row col =
+        if row < Array.length line_starts then line_starts.(row) + col else n
+      in
+      match
+        Fun.protect
+          ~finally:(fun () -> try Sys.remove tmp with _ -> ())
+          (fun () ->
+            Out_channel.with_open_bin tmp (fun oc -> output_string oc text);
+            Parse_rust_tree_sitter.parse (Fpath.v tmp))
+      with
+      | exception _ -> Bad regions
+      | { Tree_sitter_run.Parsing_result.errors = _ :: _ as errs; _ } ->
+          Bad
+            (List.filter_map
+               (fun (err : Tree_sitter_run.Tree_sitter_error.t) ->
+                 region_at
+                   (bytepos_of err.start_pos.row err.start_pos.column))
+               errs
+            |> List.sort_uniq compare)
+      | { program = None; _ } -> Bad regions
+      | { program = Some prog; _ } ->
+          let found = ref [] in
+          let v =
+            object
+              inherit [_] G.iter_no_id_info
+
+              method! visit_function_definition _env fdef =
+                match (AST_generic_helpers.funcbody_to_stmt fdef.G.fbody).G.s with
+                | G.Block (_, stmts, _) ->
+                    List.iter
+                      (fun st ->
+                        match st.G.s with
+                        | G.ExprStmt (e, _) -> found := e :: !found
+                        | _ -> ())
+                      stmts
+                | _ -> ()
+            end
+          in
+          v#visit_program () prog;
+          let refile (loc : Tok.location) =
+            { loc with pos = { loc.pos with file = Fpath.v file } }
+          in
+          Parsed
+            (List.filter_map
+               (fun (e : G.expr) ->
+                 match AST_generic_helpers.range_of_any_opt (G.E e) with
+                 | None -> None
+                 | Some (l1, _) -> (
+                     match region_at l1.Tok.pos.Pos.bytepos with
+                     | None -> None
+                     | Some (s, _) -> (
+                         match
+                           AST_generic_helpers.fix_token_locations_any refile
+                             (G.E e)
+                         with
+                         | G.E e -> Some (s, e)
+                         | _ -> None)))
+               !found))
+
+(* Parse as many [regions] as possible: drop the ones a parse error points
+   at and parse the rest again; if errors still remain (recovery can blame a
+   neighbour), bisect. Typically two parses per file. *)
+let rec parse_all ~file src regions : (int * G.expr) list =
+  match regions with
+  | [] -> []
+  | _ -> (
+      match parse_regions ~file src regions with
+      | Parsed ok -> ok
+      | Bad bad -> (
+          let bisect rs =
+            match rs with
+            | [] | [ _ ] -> []
+            | _ ->
+                let half = List.length rs / 2 in
+                parse_all ~file src (List.filteri (fun i _ -> i < half) rs)
+                @ parse_all ~file src (List.filteri (fun i _ -> i >= half) rs)
+          in
+          match List.filter (fun r -> not (List.mem r bad)) regions with
+          | [] -> []
+          (* errors located nowhere: reparsing the same set would fail again *)
+          | rest when bad = [] -> bisect rest
+          | rest -> (
+              match parse_regions ~file src rest with
+              | Parsed ok -> ok
+              | Bad _ -> bisect rest)))
+
+(* The arguments a reparsed region stands for: the elements of the region's
+   own tuple or array, else the single (parenthesized) expression. *)
+let region_args (s : int) (e : G.expr) : G.expr list =
+  match e.G.e with
+  | G.Container ((G.Tuple | G.Array), (l, elems, _))
+    when Tok.is_origintok l && Tok.bytepos_of_tok l = s ->
+      elems
+  | _ -> [ e ]
+
+let reparse_rust_macro_args ~(file : string) (ast : G.program) : G.program =
+  match In_channel.with_open_bin file In_channel.input_all with
+  | exception _ -> ast
+  | src ->
+      (* regions that failed to parse stay bags and are not retried *)
+      let rec round k failed ast =
+        let regions =
+          List.filter (fun r -> not (List.mem r failed)) (macro_regions ast)
+        in
+        if k = 0 || regions = [] then ast
+        else
+          let parsed = parse_all ~file src regions in
+          let failed =
+            List.filter (fun (s, _) -> not (List.mem_assoc s parsed)) regions
+            @ failed
+          in
+          let v =
+            object
+              inherit [_] G.map_legacy as super
+
+              method! visit_expr env e =
+                match e.G.e with
+                | G.Call (callee, (l, args, r))
+                  when is_arg_macro args && Tok.is_origintok l -> (
+                    match List.assoc_opt (Tok.bytepos_of_tok l) parsed with
+                    | Some pe ->
+                        let args =
+                          region_args (Tok.bytepos_of_tok l) pe
+                          |> List.map (fun a -> G.Arg (super#visit_expr env a))
+                        in
+                        { e with G.e = G.Call (callee, (l, args, r)) }
+                    | None -> super#visit_expr env e)
+                | _ -> super#visit_expr env e
+            end
+          in
+          round (k - 1) failed (List.map (fun st -> v#visit_stmt () st) ast)
+      in
+      round 3 [] ast
+
 (* ── Test code ─────────────────────────────────────────────────────────────
    Test code duplicates itself by nature: one assertion-shaped body per case,
    differing only in literals, plus repeated fixtures and setup. Measured on a
@@ -223,6 +454,7 @@ let units_of_file (file : string) : unit_info list =
   let ast = Parse_target.parse_program path in
   let lang = Lang.lang_of_filename_exn path in
   let ast = if lang = Lang.Ocaml then normalize_ocaml ast else ast in
+  let ast = if lang = Lang.Rust then reparse_rust_macro_args ~file ast else ast in
   Naming_AST.resolve lang ast;
   let path_is_test = is_test_path file in
   let test_ranges = test_ranges ast in
