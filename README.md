@@ -50,6 +50,8 @@ nonna check [--staged | --base REF]        # changed fns that resemble existing 
 nonna dupes <dir> [-t 0.5]                 # intra-corpus clone pairs
 #   filters: --metric max|jaccard, --name SUB, --include/--exclude SUB,..,
 #            --min-lines/--min-features N, -n LIMIT
+nonna dupes <dir> --blocks                 # exact duplicated blocks inside fns
+#   --min-stmts N (2), --min-lines N (3), --include/--exclude, --tests
 nonna features <file>                      # debug: per-fn feature dump
 nonna graph <file> --fn NAME [-o DIR]      # DOT per propagation round (+ source)
 nonna dump-il <file> [--fn NAME]           # compact IL CFG

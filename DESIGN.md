@@ -157,7 +157,9 @@ binding in-switch; only collision rate matters), 62-bit non-negative ints.
   matching. Cross-function refactors (helper extraction, test-loop parameterization)
   are **accepted misses**: a fn whose body moved into a callee is a different
   function by the engine's own definition. (Closure grafting is NOT interprocedural —
-  one source-level function either way.)
+  one source-level function either way.) Duplicated blocks inside otherwise
+  different functions are listed (`dupes --blocks`, D16) but scored only
+  within each unit's own Tree family: no cross-function scoring.
 - **D14 — Structural hashing is the baseline; names/values/types are channels.**
   Seed hashes contain no identifier strings, literal values, type descriptors or
   param positions by default — only operator kinds, call kinds, arities,
@@ -183,9 +185,49 @@ binding in-switch; only collision rate matters), 62-bit non-negative ints.
   hashes with a per-family seed so they can't coincide with Base hashes. Motive:
   ida-similarity scores a function's own features and its context as two
   Jaccards (0.5/0.5), which beats one Jaccard over the union. *(shipped as
-  plumbing only: `Base` is the single family and holds every current feature,
-  so scores are bit-identical; syntax-subtree and call-graph-context families
-  come next)*
+  plumbing first: `Base` held every feature, so scores were bit-identical;
+  the syntax-subtree family followed as D16, call-graph context comes next)*
+- **D16 — Syntax-subtree family + block clones** *(default off pending
+  sweep)*. `Syntax_tree` hashes every statement subtree of a function body,
+  at every depth, from the generic AST after naming and implicit-return
+  marking (the unit's `ubody`): a statement's hash mixes its kind with its
+  normalized token stream, each direct child statement standing as one
+  token, its own hash — so hashes compose bottom-up. Normalization: local
+  variables and parameters (resolved sids, binding sites included) are one
+  constant, not first-occurrence numbers, which would be relative to the
+  subtree hashed and break bottom-up reuse; call targets keep their name
+  (D14), a qualified callee its last segment, a locally bound callee is a
+  variable; field/method names, keywords, operators, types and non-local
+  names keep their text (as the DFG keeps fields for Python/C); literals
+  are their kind; comments carry no tokens. In macro token bags the reparse
+  left opaque (`{}` macros, qualified ones like `tracing::info!`), tokens
+  spelled like a body variable count as it and quoted/numeric tokens as
+  literals. **`Tree` family**: one feature per subtree except the body
+  itself (whole functions are Base's job, and the body hash is the one any
+  reordering breaks), weight 1 + ln(statements in the subtree): `return x;`
+  1, a 15-statement block 3.7. Extracted only when `family.tree` > 0, so
+  default signatures and outputs are unchanged and `Sigdb.format_version`
+  stays 7 (old caches hold one family array; `family_features` reads a
+  missing family as empty; a non-default weight changes the profile tag).
+  Sanity with `family.tree=0.5`: renamed pairs stay j = 1.000 in all four
+  languages (Tree alone: 1.000), but the containment subset (`floor_all` ⊂
+  `clamp_all`) drops to 0.69–0.72 (Tree containment 0.275 alone: dropping an
+  `else if` changes every enclosing subtree's hash) and fails ≥ 0.85; all 16
+  pass up to `family.tree=0.07`. **`dupes --blocks`**: exact block clones on
+  the same hashes, scb-check style with call names kept: compound statements
+  (if / loop / switch-match / try / with, bare nested blocks) with ≥ 2
+  statements in their largest body (scb's count) and ≥ 3 code lines
+  (`--min-stmts`, `--min-lines`); instances deduplicated by span (closures
+  nest in their parent), overlapping ones dropped, groups whose instances are
+  all whole function bodies dropped (those are function pairs); test code
+  and path filters as in `dupes`; sorted by duplicated SLOC (sum minus the
+  largest instance). Marghera (62k SLOC, tests included): 39 groups, 429
+  duplicated SLOC, incl. the 18-line `if storage.is_durable()` block in
+  `src/main.rs`. Of scb's 62 block groups we find 21 exactly and 10 in part;
+  the 31 missed are 12 whole-body groups (dropped by rule) and 19 whose
+  copies differ in a callee (6), a field name (6) or an enum variant / type
+  path (7) — the merges D14 says not to make. A `match` ends a line early
+  in the listing: the generic AST keeps no closing brace for it.
 
 ## Evaluation
 
@@ -336,9 +378,11 @@ oracle is Rust-only (N8); evolved_major's low tail is genuine rewrites.
 nonna/
   features/  nonna_features   # fhash, il_util, dfg (graph + grafting + φ),
                               # structural, semantic, signature (profiles,
-                              # families + fused scoring, D15)
+                              # families + fused scoring, D15), syntax_tree
+                              # (subtree hashes, D16)
   index/     nonna_index      # engine: inverted index + jaccard/containment rank
   cli/       (executable)     # main (commands/flags), units (enumeration),
+                              # blocks (dupes --blocks, D16),
                               # bench (mine/eval/rank), viz (DOT), corpus (cargo+std),
                               # sigdb (caches), lsp_server, mcp_server
 editor/vscode-nonna/          # minimal LSP client + find-similar + fn-diff

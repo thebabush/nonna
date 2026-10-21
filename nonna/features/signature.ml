@@ -5,15 +5,18 @@ type weighted = { hash : Fhash.t; weight : float }
 
 (* D15 — feature families: groups of features scored as separate weighted
    Jaccards and fused by family weight (ida-similarity style). [Base] holds
-   every feature extracted today; future families (syntax-subtree, call-graph
-   context) get their own constructor here and in [all_families]. *)
-type family = Base
+   the IL features (DFG, structural, semantic); [Tree] the syntax-subtree
+   hashes (D16, Syntax_tree). Future families (call-graph context) get their
+   own constructor here and in [all_families]. *)
+type family = Base | Tree
 
-let all_families : family list = [ Base ]
+let all_families : family list = [ Base; Tree ]
 
 (* position in [all_families] *)
-let family_index (f : family) : int = match f with Base -> 0
-let family_name (f : family) : string = match f with Base -> "base"
+let family_index (f : family) : int = match f with Base -> 0 | Tree -> 1
+
+let family_name (f : family) : string =
+  match f with Base -> "base" | Tree -> "tree"
 
 type t = {
   families : weighted array array;
@@ -24,8 +27,11 @@ type t = {
          candidate generation (D8) *)
 }
 
+(* A family past the end of [families] is empty: signatures cached before
+   [Tree] existed hold one array, and still read back as valid. *)
 let family_features (s : t) (f : family) : weighted array =
-  s.families.(family_index f)
+  let i = family_index f in
+  if i < Array.length s.families then s.families.(i) else [||]
 
 (* Per-source weights (v1 defaults: dfg 1.0, call surface 0.8, consts 0.5,
    structural 0.3). DFG features are weighted per tag. *)
@@ -56,8 +62,10 @@ let override (name : string) (default : float) : float =
   Option.value (Hashtbl.find_opt weight_overrides name) ~default
 
 (* Fusion weights per family (D15), overridable as "family.<name>" via
-   --weights. A family weighted 0 is left out of the fused score. *)
-let default_family_weight (f : family) : float = match f with Base -> 1.0
+   --weights. A family weighted 0 is left out of the fused score.
+   [Tree] is off (0.0) pending the rank sweep (D16). *)
+let default_family_weight (f : family) : float =
+  match f with Base -> 1.0 | Tree -> 0.0
 
 let family_weight (f : family) : float =
   override ("family." ^ family_name f) (default_family_weight f)
@@ -125,9 +133,11 @@ let of_families (parts : (family * (Fhash.t * float) list) list) : t =
   in
   { families; raw }
 
-(* [lang] selects the per-language base channels (Dfg.base_cfg_for). *)
+(* [lang] selects the per-language base channels (Dfg.base_cfg_for). [body]
+   is the function's AST body, which the [Tree] family hashes; it is only
+   read when that family carries weight, so default runs never pay for it. *)
 let extract ?(profile : profile option) ?(lang : Lang.t option)
-    (fcfg : IL.fun_cfg) : t =
+    ?(body : AST_generic.stmt option) (fcfg : IL.fun_cfg) : t =
   let p = match profile with Some p -> p | None -> !default_profile in
   let fc =
     match lang with Some l -> Dfg.base_cfg_for l | None -> !Dfg.base_cfg
@@ -162,7 +172,12 @@ let extract ?(profile : profile option) ?(lang : Lang.t option)
     @ (sem.Semantic.misc |> List.map (fun h -> (h, misc_weight)))
     @ (Structural.extract fcfg |> List.map (fun h -> (h, structural_weight)))
   in
-  of_families [ (Base, all) ]
+  let tree =
+    match body with
+    | Some b when family_weight Tree > 0. -> Syntax_tree.features b
+    | _ -> []
+  in
+  of_families [ (Base, all); (Tree, tree) ]
 
 (* Total feature count across families (the min-feature gates). *)
 let size (s : t) : int =

@@ -4,6 +4,7 @@
  *   nonna dupes <dir|files...> [-t 0.5]        intra-corpus clone pairs
  *       filters: --metric max|jaccard, --name SUB, --include/--exclude SUB,SUB,
  *                --min-lines/--min-features N, -n LIMIT, --tests (include test code)
+ *       --blocks: exact duplicated blocks instead of function pairs (blocks.ml)
  *   nonna query <corpus...> -- <draft.rs> [-t 0.25] [-k 5]
  *       reuse-before-write: for each fn in draft, top matches in corpus
  *   nonna check [--staged | --base REF] [paths...] [--deps] [--strict]
@@ -24,12 +25,13 @@ let cmd_features (file : string) =
   Units.units_of_file file
   |> List.iter (fun (u : Units.unit_info) ->
          let feats = Dfg.extract u.Units.ucfg in
-         let sg = Signature.extract ~lang:u.Units.ulang u.Units.ucfg in
+         let sg = Units.extract u in
          Printf.printf "=== %s (%s)%s — %d dfg features, %d total (%s)\n"
            u.Units.uname (Units.loc_str u)
            (if u.Units.utest then " [test]" else "")
            (List.length feats) (Signature.size sg)
            (Signature.all_families
+           |> List.filter (fun f -> Signature.family_weight f > 0.)
            |> List.map (fun f ->
                   Printf.sprintf "%s %d" (Signature.family_name f)
                     (Array.length (Signature.family_features sg f)))
@@ -66,7 +68,7 @@ let cmd_query (corpus : string list) (draft : string) (threshold : float)
   Printf.printf "corpus: %d units indexed\n" (List.length kept);
   Units.units_of_file draft
   |> List.iter (fun (u : Units.unit_info) ->
-         let sg = Signature.extract ~lang:u.Units.ulang u.Units.ucfg in
+         let sg = Units.extract u in
          Printf.printf "\n── %s (%s) — %d features\n" u.Units.uname
            (Units.loc_str u) (Signature.size sg);
          if Signature.size sg < Units.min_features then
@@ -195,6 +197,8 @@ let parse_flags (args : string list) : string list * (string * string) list =
     | "--metric" :: v :: rest -> go pos (("metric", v) :: flags) rest
     | "--fn" :: v :: rest -> go pos (("fn", v) :: flags) rest
     | "--tests" :: rest -> go pos (("tests", "1") :: flags) rest
+    | "--blocks" :: rest -> go pos (("blocks", "1") :: flags) rest
+    | "--min-stmts" :: v :: rest -> go pos (("min-stmts", v) :: flags) rest
     | "--staged" :: rest -> go pos (("staged", "1") :: flags) rest
     | "--base" :: v :: rest -> go pos (("base", v) :: flags) rest
     | "--deps" :: rest -> go pos (("deps", "1") :: flags) rest
@@ -219,6 +223,9 @@ let usage () =
     \  nonna dupes <dir|files...> [-t 0.5] [--metric max|jaccard] [-n LIMIT]\n\
     \                            [--name SUB] [--include SUB,..] [--exclude SUB,..]\n\
     \                            [--min-lines N] [--min-features N] [--tests]\n\
+    \  nonna dupes <dir|files...> --blocks [--min-stmts 2] [--min-lines 3]\n\
+    \                            [--include SUB,..] [--exclude SUB,..] [--tests]\n\
+    \                            (exact duplicated blocks inside functions)\n\
     \  nonna query <corpus...> -- <draft.rs> [-t 0.25] [-k 5]\n\
     \  nonna check [--staged | --base REF] [paths...] [-t 0.7] [--deps]\n\
     \                            [--strict]\n\
@@ -308,6 +315,17 @@ let () =
             (List.assoc_opt "fn" flags)
             (flag flags "o" "viz-out" (fun s -> s))
       | _ -> usage ())
+  | "dupes" :: rest when List.mem "--blocks" rest ->
+      (* block clones only (D16); the function-pair listing is not run *)
+      let pos, flags = parse_flags rest in
+      if pos = [] then usage ();
+      Blocks.run
+        ~include_tests:(List.mem_assoc "tests" flags)
+        ~include_paths:(flag flags "include" [] split_csv)
+        ~exclude_paths:(flag flags "exclude" [] split_csv)
+        ~min_stmts:(flag flags "min-stmts" Blocks.min_stmts int_of_string)
+        ~min_lines:(flag flags "min-lines" Blocks.min_lines int_of_string)
+        pos
   | "dupes" :: rest ->
       let pos, flags = parse_flags rest in
       if pos = [] then usage ();

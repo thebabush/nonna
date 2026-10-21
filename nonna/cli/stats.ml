@@ -46,7 +46,7 @@ let stats_of_unit (u : Units.unit_info) : ustats =
                    | IL.FixmeExp _ -> incr fixme_exps
                    | _ -> ())));
   let feats =
-    Signature.size (Signature.extract ~lang:u.Units.ulang u.Units.ucfg)
+    Signature.size (Units.extract u)
   in
   {
     instrs = !instrs;

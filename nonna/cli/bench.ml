@@ -590,7 +590,7 @@ let eval ?(scores_out : string option) (pairs_file : string) =
              Units.units_of_file file
              |> List.iter (fun (u : Units.unit_info) ->
                     Hashtbl.replace t u.Units.uline_start
-                      (Signature.extract ~lang:u.Units.ulang u.Units.ucfg))
+                      (Units.extract u))
            with _ -> ());
           Hashtbl.replace cache file t;
           t

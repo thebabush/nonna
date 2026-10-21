@@ -387,8 +387,8 @@ let diff_functions (args : J.t) : J.t =
   match (resolve_side args "a", resolve_side args "b") with
   | Error e, _ | _, Error e -> tool_text ~is_error:true e
   | Ok (la, ua), Ok (lb, ub) ->
-      let sa = Signature.extract ~lang:ua.Units.ulang ua.Units.ucfg in
-      let sb = Signature.extract ~lang:ub.Units.ulang ub.Units.ucfg in
+      let sa = Units.extract ua in
+      let sb = Units.extract ub in
       let ga =
         Dfg.graph_of
           ~fc:(Dfg.base_cfg_for ua.Units.ulang)

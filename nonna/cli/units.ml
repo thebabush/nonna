@@ -12,6 +12,7 @@ type unit_info = {
   uline_end : int;
   ucode_lines : int; (* lines carrying code tokens; comments/docstrings out *)
   ucfg : IL.fun_cfg;
+  ubody : G.stmt; (* named, implicit returns marked: the Tree family (D16) *)
   utokens : string list; (* body token contents (comment/ws-free) *)
   utest : bool; (* test code — see [is_test_path] / [test_ranges] *)
 }
@@ -484,6 +485,7 @@ let units_of_file (file : string) : unit_info list =
               uline_end = line_end;
               ucode_lines = code_lines_of_body body_stmt;
               ucfg = fcfg;
+              ubody = body_stmt;
               utokens = Nonna_features.Il_util.token_strings_of_any body_any;
               utest =
                 path_is_test
@@ -593,9 +595,13 @@ let loc_str (u : unit_info) =
 (* Units below this many features are too small to match meaningfully. *)
 let min_features = 5
 
+(* A unit's signature, unconditionally. *)
+let extract (u : unit_info) : Signature.t =
+  Signature.extract ~lang:u.ulang ~body:u.ubody u.ucfg
+
 (* A unit's signature, or None when it is too small to match. *)
 let signature (u : unit_info) : Signature.t option =
-  let sg = Signature.extract ~lang:u.ulang u.ucfg in
+  let sg = extract u in
   if Signature.size sg < min_features then None else Some sg
 
 (* The one place an Engine.meta is built from a unit. *)

@@ -305,7 +305,7 @@ let run ~(staged : bool) ~(base : string option) ~(deps : bool)
   if staged then List.iter (fun (_, us) -> List.iter add (Corpus.entries_of_units us)) changed;
   if deps then ignore (Corpus.add_deps b root);
   let eng = Engine.freeze b in
-  let sig_of (u : Units.unit_info) = Signature.extract ~lang:u.Units.ulang u.Units.ucfg in
+  let sig_of (u : Units.unit_info) = Units.extract u in
   let checked = ref 0 in
   let findings =
     changed
