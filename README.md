@@ -96,9 +96,12 @@ view, with threshold/metric/name/include-exclude-path/size filters and a
 `time_budget_s` that returns partial results instead of hanging; `group: true`
 returns clone classes as `dupes --classes` prints them), `status`.
 Every tool skips test code unless `include_tests` is set. Long calls honour
-MCP `notifications/cancelled`. The server's `instructions` explain score
-semantics to the agent (jaccard ≈ 1: same up to renaming; containment ≈ 1:
-"it does everything yours does, plus more").
+MCP `notifications/cancelled`. The server's `instructions` tell the agent
+when to call which tool (after writing a new function: `find_similar`; when
+deduplicating: `find_duplicates`; before replacing one function with another:
+`diff_functions`) and how to read scores (jaccard ≈ 1: same up to renaming;
+containment ≈ 1: "it does everything yours does, plus more"). All tools but
+`status` carry a `_meta["anthropic/searchHint"]` for Claude Code's tool search.
 
 Create a `.nonna` file at the workspace root to enable MCP indexing. It may
 also hold per-workspace config, one `key = value` per line:
@@ -113,7 +116,8 @@ include = crates/, src/   # or: only index files whose path contains one of thes
 The
 corpus root is indexed at startup (workspace plus cargo deps + std
 from per-`crate@version` caches under `~/.cache/nonna/sigdb` — first dep index
-~1 min, warm loads < 0.5 s). Check `status` before trusting empty results.
+~1 min, warm loads < 0.5 s). Results say when the index is still incomplete;
+`status` shows its state.
 Subsequent tool and explorer requests check workspace and local dependency
 contents and refresh the index when files change. Registry/Git dependency
 caches are separated by resolved source and source directory.

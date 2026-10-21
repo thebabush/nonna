@@ -607,22 +607,37 @@ let side_props p what =
     (p ^ "_name", "string", "the function's name (alternative to line)");
   ]
 
+(* Hidden search keywords: Claude Code's ToolSearch scores a word-boundary
+   match in `_meta["anthropic/searchHint"]` (+4, between a name part and a
+   description word) but never shows it to the model. Each word can also
+   pull the tool into an unrelated search, so a hint carries only the
+   vocabulary of the job its own tool does. *)
+let search_hint (hint : string) : string * J.t =
+  ("_meta", `Assoc [ ("anthropic/searchHint", `String hint) ])
+
+(* Descriptions lead with purpose and trigger: Cursor keeps 200 chars, some
+   Codex runs 140; Claude Code cuts at 2048. *)
 let tool_defs : J.t =
   `List
     [
       `Assoc
         [
           ("name", `String "find_similar");
-          ("title", `String "Find existing functions similar to drafted code");
+          ("title", `String "Check for an existing equivalent function");
           ( "description",
             `String
-              "Find existing functions in the workspace and its dependencies \
-               that are structurally similar to a code snippet you have just \
-               written (reuse-before-write check). Takes the drafted function \
-               as a code string, returns ranked matches with jaccard and \
-               containment scores and their source. Call it before committing \
-               a new function: a match near 1.0 means an equivalent already \
-               exists and should be called instead of duplicated." );
+              "Check whether a function you just wrote already exists. Returns \
+               existing functions (workspace, dependencies, std) that are \
+               structurally similar to it: duplicates, clones, copy-paste \
+               variants, renamed reimplementations, ranked with \
+               jaccard/containment scores and source. Use it after writing a \
+               new function or helper, before moving on. Give the function as \
+               `code` (+ `language`). A match near 1.0: call the existing \
+               function instead of keeping the duplicate. No match is not \
+               proof that none exists." );
+          search_hint
+            "reuse existing function functions implementation helper already \
+             exists duplicate clone similar similarity";
           ( "inputSchema",
             schema
               [
@@ -659,11 +674,14 @@ let tool_defs : J.t =
           ("title", `String "Find functions similar to one on disk");
           ( "description",
             `String
-              "Find functions structurally similar to an existing function, \
-               identified by its file plus a line inside it or its name. Use \
-               it to locate copies, variants and refactor candidates of code \
-               already in the repository; for code not yet saved use \
-               find_similar. Returns ranked matches with scores and source." );
+              "Find existing functions similar to one already in a file: \
+               duplicates, clones and copy-paste variants of the function at \
+               `file` + `line` or `name`. Use it on a function already on \
+               disk, or to locate copies and refactor candidates in the \
+               repository; for code not yet saved use find_similar. Returns \
+               ranked matches with jaccard/containment scores and source. No \
+               match is not proof that none exists." );
+          search_hint "similar existing function clone duplicate file line";
           ( "inputSchema",
             schema
               ([
@@ -699,13 +717,14 @@ let tool_defs : J.t =
           ("title", `String "Compare two functions structurally");
           ( "description",
             `String
-              "Compare two functions A and B structurally: their similarity \
-               scores (A ∩ B) plus the dataflow regions unique to each side, \
-               grouped by source line. For a buggy function A and its fixed \
-               version B, A−B localizes the bug and B−A the fix; for two \
-               variants it shows exactly where they diverge. Each side is \
-               given as code (<side>_code) or as <side>_file plus \
-               <side>_line or <side>_name." );
+              "Compare two functions and show where they differ: similarity \
+               scores plus the dataflow regions unique to each side, by \
+               source line. Use it to check a near-duplicate is really \
+               equivalent before replacing it, or to localize a bug against \
+               its fixed version (A−B ≈ bug, B−A ≈ fix). Each side is given \
+               as code (<side>_code) or as <side>_file plus <side>_line or \
+               <side>_name." );
+          search_hint "compare diff two functions difference equivalent bug fix";
           ( "inputSchema",
             schema (side_props "a" "function A" @ side_props "b" "function B") []
           );
@@ -716,10 +735,11 @@ let tool_defs : J.t =
           ("title", `String "List duplicate function pairs in the workspace");
           ( "description",
             `String
-              "List pairs of structurally duplicate (clone, copy-pasted, \
-               near-identical) functions across the whole workspace, with no \
-               query function needed: the dedup and refactor view. Each pair \
-               reports jaccard and containment with both locations. Scans \
+              "Find duplicate functions across the workspace: clone pairs, \
+               copy-pasted and near-identical functions, no query function \
+               needed. Use when refactoring, deduplicating or reviewing for \
+               duplicated code. Each pair reports jaccard and containment \
+               with both locations. Scans \
                workspace functions by default; include_deps also matches them \
                against dependencies and std. Test code is skipped unless \
                include_tests is set, since test cases duplicate each other by \
@@ -727,13 +747,14 @@ let tool_defs : J.t =
                enum-to-string match tables, one-query DB wrappers and \
                cfg(unix)/cfg(not(unix)) twins score 1.0 against their siblings \
                (the literals setting in .nonna separates most of them); \
-               min_lines and min_features drop the one-line closures. Other \
-               filters: threshold, metric (max|jaccard), name substring, \
-               include/exclude path substrings, limit, time_budget_s. With \
+               min_lines and min_features drop the one-line closures. With \
                group:true it returns clone classes instead (connected groups \
                of the pairs, each with its score range, members and \
                duplicated SLOC) under a summary of the workspace's \
                duplicated share." );
+          search_hint
+            "dedup deduplicate duplicates duplicated clone clones copy-paste \
+             refactor cleanup classes";
           ( "inputSchema",
             schema
               [
@@ -779,11 +800,9 @@ let tool_defs : J.t =
           ("title", `String "Show nonna index status");
           ( "description",
             `String
-              "Show the nonna index status: workspace root, how many functions \
+              "Show nonna's index state: workspace root, how many functions \
                are indexed (workspace, test code, dependencies), whether \
-               background indexing has finished, and the literals setting. \
-               Call it first; results from the other tools while indexing is \
-               still in progress are inconclusive." );
+               background indexing has finished, and the literals setting." );
           ("inputSchema", schema [] []);
         ];
     ]
@@ -872,35 +891,38 @@ let call_tool (name : string) (args : J.t) : J.t =
 
 (* ── Dispatch ────────────────────────────────────────────────────────────── *)
 
-(* Server-level context for the LLM (MCP `instructions`): what kind of
-   similarity this is and how to read the numbers — the shared workflow only.
-   Clients fold these instructions into EVERY tool's retrieval text, so
-   tool-specific capabilities and caveats live in each tool's description
-   (see ~/work/hr/mcp-tool-selection/docs/tool-naming.md). Computed per
-   initialize: the literals line depends on the workspace config. *)
+(* Server-level context for the LLM (MCP `instructions`): when to reach for
+   nonna, by bare tool name, and how to read the numbers. Claude Code shows
+   them before any tool search but does not score them; Codex folds them
+   into every tool's search text, so they stay on domain words (no generic
+   search/file/lookup/docs) and tool-specific caveats live in each tool's
+   description (see ~/work/hr/mcp-tool-selection/docs/tool-naming.md).
+   Computed per initialize: the literals line depends on the workspace
+   config. *)
 let instructions () =
-  "nonna finds structurally similar functions: each function's resolved \
-   control/data-flow graph (semgrep/opengrep IL) is hashed into a feature \
-   set via iterative dataflow hashing; similarity = weighted jaccard + \
-   asymmetric containment over those sets. Queries are code (snippets or \
-   file locations); natural-language queries will not work. Matching is \
-   rename-invariant: variable names, identifiers and concrete types are \
-   ignored — two functions match if they compute the same way. Literal \
-   values: "
+  "nonna answers \"does code like this already exist?\" for this workspace, \
+   its dependencies and std, by structure, not by name. Use it (1) right \
+   after writing a new function or helper, before moving on: `find_similar` \
+   with its code (or `query_similar` with file+line|name). A match means \
+   call the existing function instead of keeping a duplicate. (2) When \
+   refactoring or deduplicating: `find_duplicates` lists clone pairs, no \
+   query needed (`group: true` for clone classes and the duplicated share). \
+   (3) To see where two similar functions differ, e.g. before replacing one \
+   with the other: `diff_functions`. Queries are code, not natural \
+   language. Matching ignores names, identifiers and concrete types; literal \
+   values "
   ^ (if Dfg.literals_on () then
-       "hashed in this workspace (literals = true), so functions that differ \
-        only in constants do not match."
+       "are hashed in this workspace (literals = true), so functions that \
+        differ only in constants do not match."
      else
-       "use language defaults: integer values are hashed, and Rust, Python, \
-        C and C++ also hash strings; float values are ignored.")
-  ^ " Reading scores: jaccard ≈ 1.0 means same function up to \
-     renaming/formatting; containment ≈ 1.0 means the other function does \
-     everything this one does (and possibly more) — a strong 'call it \
-     instead' signal even when jaccard is moderate. The workspace is indexed \
-     at startup in the background: call `status` first; an empty result \
-     while indexing is still in progress is inconclusive, not a no-match. \
-     Test code is excluded from matches by default; pass include_tests:true \
-     to any tool to rank against it."
+       "use language defaults: integer values are hashed, Python, C and C++ \
+        also hash strings, Rust and OCaml hash string chunks (an edited \
+        string still partly matches); float values are ignored.")
+  ^ " Scores: jaccard ≈ 1.0 = same function up to renaming; containment ≈ \
+     1.0 = the match does everything yours does (maybe more), a strong \
+     \"call it instead\" signal even at moderate jaccard. The index builds \
+     in the background; results say when it is still incomplete. Test code \
+     is excluded unless include_tests:true."
 
 (* [Reply]: a response to send now. [Silent]: a notification, nothing to
    send. [Deferred]: a tool call — the transport decides whether to run it

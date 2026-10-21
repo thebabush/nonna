@@ -73,7 +73,7 @@ trap 'kill $SRV 2>/dev/null; rm -f "$ROOT/.nonna"' EXIT
 sleep 3
 HOUT=$(curl -s -X POST "http://127.0.0.1:$PORT/mcp" -H 'Content-Type: application/json' \
   -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{}}}')
-echo "$HOUT" | grep -q 'rename-invariant' && echo "ok   http: initialize + instructions" || { echo "FAIL http: initialize"; fail=1; }
+echo "$HOUT" | grep -q 'does code like this already exist' && echo "ok   http: initialize + instructions" || { echo "FAIL http: initialize"; fail=1; }
 HOUT=$(curl -s -X POST "http://127.0.0.1:$PORT/mcp" -H 'Content-Type: application/json' \
   -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"status","arguments":{}}}')
 echo "$HOUT" | grep -q 'indexed functions' && echo "ok   http: tools/call status" || { echo "FAIL http: tools/call"; fail=1; }
