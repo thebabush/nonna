@@ -28,6 +28,8 @@ OUT=$( {
   # live under tests/, so they count as test code: excluded unless asked for.
   echo '{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"find_duplicates","arguments":{"threshold":0.5,"name":"clamp","include_tests":true}}}'
   echo '{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"find_duplicates","arguments":{"threshold":0.5,"name":"clamp"}}}'
+  # clone classes instead of pairs: mean and avg form the one class at 0.9
+  echo '{"jsonrpc":"2.0","id":11,"method":"tools/call","params":{"name":"find_duplicates","arguments":{"threshold":0.9,"group":true,"include_tests":true}}}'
   # find_similar filters (same dup knobs): min_lines gates the mean match away
   echo '{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"find_similar","arguments":{"code":"fn my_avg(qs: &[f64]) -> f64 { let mut k = 0usize; let mut s = 0.0; for q in qs { s += q; k += 1; } if k == 0 { 0.0 } else { s / k as f64 } }","language":"rust","min_lines":9999}}}'
 } | "$BIN" mcp "$ROOT" 2>/dev/null )
@@ -47,6 +49,7 @@ check "diff: B-A has the fix"     'B − A'
 check "diff: hi-branch unique"    'hi'
 check "find_duplicates lists pairs" 'duplicate pair'
 check "find_duplicates excludes test code by default" 'test code and were excluded'
+check "find_duplicates group lists classes" '1 clone classes, 2 functions'
 check "find_similar min_lines gates" 'No similar function found for drafted `my_avg`'
 check "status reports language-default literals" 'literals: language defaults'
 check "status reports string chunks in Rust defaults" 'Rust and OCaml hash string chunks'

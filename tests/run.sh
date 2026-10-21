@@ -36,6 +36,28 @@ check "dupes: exactly one high-sim pair in fixtures" "[ \"\$DUPES\" = 1 ]"
 NOTESTS=$("$BIN" dupes tests/fixtures spike -t 0.9 | grep -c '<->')
 check "dupes: test-path units skipped by default" "[ \"\$NOTESTS\" = 0 ]"
 
+# Clone classes (D18): the same pair is one class of two, and the summary's
+# percentage is its duplicated SLOC over the code lines scanned.
+CLS=$("$BIN" dupes tests/fixtures spike -t 0.9 --tests --classes)
+check "dupes --classes: one class, mean + avg" \
+  "echo \"\$CLS\" | grep -q '^nonna dupes: 1 clone classes, 2 functions' &&
+   [ \"\$(echo \"\$CLS\" | grep -c '^#')\" = 1 ] &&
+   echo \"\$CLS\" | grep -q '^  mean ' && echo \"\$CLS\" | grep -q '^  avg '"
+SUM=$(echo "$CLS" | head -1)
+check "dupes --classes: summary percentage is D / T" \
+  "echo \"\$SUM\" | awk '{d=\$8; p=\$11; t=\$13; sub(/[(]/,\"\",p); sub(/%/,\"\",p);
+     exit !(d > 0 && t > 0 && sprintf(\"%.1f\", 100*d/t) == p)}'"
+check "dupes --classes: class SLOC is the summary's" \
+  "[ \"\$(echo \"\$CLS\" | grep '^#1 ' | sed 's/.*(\\([0-9]*\\) duplicated).*/\\1/')\" = \"\$(echo \"\$SUM\" | awk '{print \$8}')\" ]"
+CLSB=$("$BIN" dupes tests/fixtures spike -t 0.9 --tests --classes --blocks | head -1)
+check "dupes --classes --blocks: blocks inside the class add nothing" \
+  "echo \"\$CLSB\" | grep -q '0 of them outside the classes: '\"\$(echo \"\$SUM\" | awk '{print \$8}')\"' duplicated SLOC in all'"
+# A closure in a class member folds into it: outer (14 code lines) holds f
+# (11), plain is 11; the class deletes plain only and the total is 14 + 11.
+NEST=$("$BIN" dupes tests/classes -t 0.3 --tests --classes | head -1)
+check "dupes --classes: nested member folded (11 of 25)" \
+  "echo \"\$NEST\" | grep -q '3 functions, 11 duplicated SLOC (44.0% of 25 code lines'"
+
 # Rust macro arguments are reparsed: assert-only tests that call different
 # functions no longer share a signature; renamed copies still match.
 MAC=$("$BIN" dupes tests/macros -t 0.0 --tests --min-features 1)

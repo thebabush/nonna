@@ -5,6 +5,9 @@
  *       filters: --metric max|jaccard, --name SUB, --include/--exclude SUB,SUB,
  *                --min-lines/--min-features N, -n LIMIT, --tests (include test code)
  *       --blocks: exact duplicated blocks instead of function pairs (blocks.ml)
+ *       --classes [--class-threshold T] [--expand]: clone classes over the
+ *                pairs plus a duplicated-SLOC summary (clones.ml); with
+ *                --blocks, block clones join the summary
  *   nonna query <corpus...> -- <draft.rs> [-t 0.25] [-k 5]
  *       reuse-before-write: for each fn in draft, top matches in corpus
  *   nonna check [--staged | --base REF] [paths...] [--deps] [--strict]
@@ -40,26 +43,103 @@ let cmd_features (file : string) =
                 Printf.printf "  %016x %s\n" f.Dfg.hash
                   (Dfg.tag_name f.Dfg.tag)))
 
-let cmd_dupes (paths : string list) (flt : Engine.dup_filter) =
+(* Clone-class mode of [dupes] (D18): summary line first, then the classes.
+   [blocks] adds block clones (D16) to the summary and lists their groups
+   after the classes. *)
+type block_opts = { min_stmts : int; min_lines : int }
+
+type classes_opts = {
+  class_threshold : float;
+  expand : bool;
+  blocks : block_opts option;
+}
+
+let cmd_dupes ?classes (paths : string list) (flt : Engine.dup_filter) =
   let units = Units.units_of_paths paths in
   let eng, kept = Units.index_units units in
   let tests =
     List.length (List.filter (fun ((u : Units.unit_info), _) -> u.Units.utest) kept)
   in
-  Printf.printf "indexed %d units (of %d; min %d features) from %d file(s)%s\n"
-    (List.length kept) (List.length units) Units.min_features
-    (List.length (Units.source_files_of_paths paths))
-    (if flt.Engine.include_tests then ""
-     else Printf.sprintf "; skipping %d test units (--tests to include)" tests);
-  let pairs = Engine.duplicates_filtered eng flt in
-  if pairs = [] then print_endline "no duplicate candidates above threshold."
-  else
-    pairs
-    |> List.iter (fun (p : Engine.pair) ->
-           Printf.printf "j %.3f c %.3f  %s (%s:%d)  <->  %s (%s:%d)\n"
-             p.Engine.j p.Engine.c p.Engine.a.Engine.name p.Engine.a.Engine.file
-             p.Engine.a.Engine.line_start p.Engine.b.Engine.name
-             p.Engine.b.Engine.file p.Engine.b.Engine.line_start)
+  let indexed =
+    Printf.sprintf "indexed %d units (of %d; min %d features) from %d file(s)%s"
+      (List.length kept) (List.length units) Units.min_features
+      (List.length (Units.source_files_of_paths paths))
+      (if flt.Engine.include_tests then ""
+       else Printf.sprintf "; skipping %d test units (--tests to include)" tests)
+  in
+  if classes = None then print_endline indexed;
+  (* in class mode every pair feeds the classes; -n caps the classes listed
+     instead (as MCP find_duplicates group:true) *)
+  let pairs =
+    Engine.duplicates_filtered eng
+      (if classes = None then flt else { flt with Engine.limit = 0 })
+  in
+  match classes with
+  | Some o ->
+      let cs =
+        Clones.classes ~threshold:o.class_threshold ~by_max:flt.Engine.by_max
+          pairs
+      in
+      let gated (u : Units.unit_info) =
+        (flt.Engine.include_tests || not u.Units.utest)
+        && Engine.path_match ~include_paths:flt.Engine.include_paths
+             ~exclude_paths:flt.Engine.exclude_paths u.Units.ufile
+      in
+      (* the units the scan covered, for the line total: the pair scan's
+         (indexed, past the side gates), or with blocks every gated unit,
+         indexed or not, since blocks are found in all of them *)
+      let scanned =
+        match o.blocks with
+        | None -> List.filter_map (fun (u, _) -> if gated u then Some u else None) kept
+        | Some _ -> List.filter gated units
+      in
+      let summary = Clones.summary cs ~scanned:(List.map Units.meta_of scanned) in
+      let gs =
+        match o.blocks with
+        | None -> []
+        | Some { min_stmts; min_lines } -> Blocks.groups ~min_stmts ~min_lines scanned
+      in
+      (match o.blocks with
+      | None -> Printf.printf "nonna dupes: %s\n" summary
+      | Some _ ->
+          let total =
+            Clones.code_lines (Clones.roots (List.map Units.meta_of scanned))
+          in
+          let extra = Clones.block_extra_sloc cs gs in
+          let dup = Clones.total_dup_sloc cs + extra in
+          Printf.printf
+            "nonna dupes: %s; %d block clone group(s), %d duplicated SLOC, %d \
+             of them outside the classes: %d duplicated SLOC in all (%.1f%%)\n"
+            summary (List.length gs)
+            (List.fold_left (fun n (g : Blocks.group) -> n + g.Blocks.dup_sloc) 0 gs)
+            extra dup (Clones.pct dup total));
+      print_endline indexed;
+      let limit = flt.Engine.limit in
+      List.iteri
+        (fun k c ->
+          if limit <= 0 || k < limit then begin
+            print_newline ();
+            List.iter print_endline (Clones.render ~expand:o.expand (k + 1) c)
+          end)
+        cs;
+      Option.iter
+        (fun { min_stmts; min_lines } ->
+          if gs <> [] then (
+            Printf.printf
+              "\nblock clones (blocks >= %d statements, >= %d code lines):\n"
+              min_stmts min_lines;
+            Blocks.print_groups gs))
+        o.blocks
+  | None ->
+      if pairs = [] then print_endline "no duplicate candidates above threshold."
+      else
+        pairs
+        |> List.iter (fun (p : Engine.pair) ->
+               Printf.printf "j %.3f c %.3f  %s (%s:%d)  <->  %s (%s:%d)\n"
+                 p.Engine.j p.Engine.c p.Engine.a.Engine.name
+                 p.Engine.a.Engine.file p.Engine.a.Engine.line_start
+                 p.Engine.b.Engine.name p.Engine.b.Engine.file
+                 p.Engine.b.Engine.line_start)
 
 let cmd_query (corpus : string list) (draft : string) (threshold : float)
     (top_k : int) =
@@ -197,6 +277,10 @@ let parse_flags (args : string list) : string list * (string * string) list =
     | "--fn" :: v :: rest -> go pos (("fn", v) :: flags) rest
     | "--tests" :: rest -> go pos (("tests", "1") :: flags) rest
     | "--blocks" :: rest -> go pos (("blocks", "1") :: flags) rest
+    | "--classes" :: rest -> go pos (("classes", "1") :: flags) rest
+    | "--expand" :: rest -> go pos (("expand", "1") :: flags) rest
+    | "--class-threshold" :: v :: rest ->
+        go pos (("class-threshold", v) :: flags) rest
     | "--min-stmts" :: v :: rest -> go pos (("min-stmts", v) :: flags) rest
     | "--staged" :: rest -> go pos (("staged", "1") :: flags) rest
     | "--base" :: v :: rest -> go pos (("base", v) :: flags) rest
@@ -225,6 +309,9 @@ let usage () =
     \  nonna dupes <dir|files...> --blocks [--min-stmts 2] [--min-lines 3]\n\
     \                            [--include SUB,..] [--exclude SUB,..] [--tests]\n\
     \                            (exact duplicated blocks inside functions)\n\
+    \  nonna dupes <dir|files...> --classes [--class-threshold T] [--expand]\n\
+    \                            [pair filters] [--blocks]\n\
+    \                            (clone classes + duplicated-SLOC summary)\n\
     \  nonna query <corpus...> -- <draft.rs> [-t 0.25] [-k 5]\n\
     \  nonna check [--staged | --base REF] [paths...] [-t 0.7] [--deps]\n\
     \                            [--strict]\n\
@@ -316,7 +403,7 @@ let () =
             (List.assoc_opt "fn" flags)
             (flag flags "o" "viz-out" (fun s -> s))
       | _ -> usage ())
-  | "dupes" :: rest when List.mem "--blocks" rest ->
+  | "dupes" :: rest when List.mem "--blocks" rest && not (List.mem "--classes" rest) ->
       (* block clones only (D16); the function-pair listing is not run *)
       let pos, flags = parse_flags rest in
       if pos = [] then usage ();
@@ -338,9 +425,30 @@ let () =
             prerr_endline "unknown --metric (use: max | jaccard)";
             exit 1
       in
-      cmd_dupes pos
+      let threshold = flag flags "t" 0.5 float_of_string in
+      let classes =
+        if List.mem_assoc "classes" flags then
+          Some
+            {
+              class_threshold =
+                flag flags "class-threshold" threshold float_of_string;
+              expand = List.mem_assoc "expand" flags;
+              blocks =
+                (if List.mem_assoc "blocks" flags then
+                   Some
+                     {
+                       min_stmts =
+                         flag flags "min-stmts" Blocks.min_stmts int_of_string;
+                       min_lines =
+                         flag flags "min-lines" Blocks.min_lines int_of_string;
+                     }
+                 else None);
+            }
+        else None
+      in
+      cmd_dupes ?classes pos
         {
-          Engine.threshold = flag flags "t" 0.5 float_of_string;
+          Engine.threshold;
           by_max;
           name_sub = flag flags "name" "" (fun s -> s);
           include_paths = flag flags "include" [] split_csv;

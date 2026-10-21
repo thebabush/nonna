@@ -52,6 +52,10 @@ nonna dupes <dir> [-t 0.5]                 # intra-corpus clone pairs
 #            --min-lines/--min-features N, -n LIMIT
 nonna dupes <dir> --blocks                 # exact duplicated blocks inside fns
 #   --min-stmts N (2), --min-lines N (3), --include/--exclude, --tests
+nonna dupes <dir> --classes                # clone classes + duplicated-SLOC summary
+#   pairs grouped into connected classes, most duplicated SLOC first;
+#   --class-threshold T (default -t) links only pairs >= T, --expand lists
+#   every member; with --blocks, block clones join the summary
 nonna features <file>                      # debug: per-fn feature dump
 nonna graph <file> --fn NAME [-o DIR]      # DOT per propagation round (+ source)
 nonna dump-il <file> [--fn NAME]           # compact IL CFG
@@ -89,7 +93,8 @@ Tools: `find_similar` (drafted code → ranked existing fns with source),
 unique regions by source line — for a bug/fix pair, A−B ≈ bug, B−A ≈ fix),
 `find_duplicates` (workspace clone pairs, no query fn — the dedup/refactor
 view, with threshold/metric/name/include-exclude-path/size filters and a
-`time_budget_s` that returns partial results instead of hanging), `status`.
+`time_budget_s` that returns partial results instead of hanging; `group: true`
+returns clone classes as `dupes --classes` prints them), `status`.
 Every tool skips test code unless `include_tests` is set. Long calls honour
 MCP `notifications/cancelled`. The server's `instructions` explain score
 semantics to the agent (jaccard ≈ 1: same up to renaming; containment ≈ 1:

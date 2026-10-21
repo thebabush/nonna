@@ -23,6 +23,7 @@ type instance = {
   first : Tok.location;
   last : Tok.location;
   sloc : int;
+  lines : int list; (* its code lines, ascending ([sloc] of them) *)
   whole : bool; (* the entire body of some unit: already a function pair *)
 }
 
@@ -65,7 +66,8 @@ let blocks_of_unit ~min_stmts ~min_lines (u : Units.unit_info) :
            (is_compound st || List.memq st bare)
            && n.Syntax_tree.body_stmts >= min_stmts
          then
-           let sloc = Units.code_lines_of_body st in
+           let lines = Units.code_line_set_of_body st in
+           let sloc = List.length lines in
            if sloc < min_lines then None
            else
              Some
@@ -75,6 +77,7 @@ let blocks_of_unit ~min_stmts ~min_lines (u : Units.unit_info) :
                    first = n.Syntax_tree.first;
                    last = n.Syntax_tree.last;
                    sloc;
+                   lines;
                    whole = List.memq st whole;
                  } )
          else None)
@@ -123,9 +126,8 @@ let groups ?(min_stmts = min_stmts) ?(min_lines = min_lines)
       in
       if List.length is < 2 || List.for_all (fun i -> i.whole) is then acc
       else
-        let total = List.fold_left (fun n i -> n + i.sloc) 0 is in
-        let biggest = List.fold_left (fun n i -> max n i.sloc) 0 is in
-        { instances = is; dup_sloc = total - biggest } :: acc)
+        { instances = is; dup_sloc = Units.dup_sloc (List.map (fun i -> i.sloc) is) }
+        :: acc)
     by_hash []
   |> List.sort (fun a b ->
          (* most duplicated SLOC first; then by first location, for a stable
@@ -137,18 +139,35 @@ let groups ?(min_stmts = min_stmts) ?(min_lines = min_lines)
          in
          compare (key a) (key b))
 
+(* The units a scan covers: test code only with --tests, path scope as in
+   [dupes]. *)
+let scanned ~(include_tests : bool) ~(include_paths : string list)
+    ~(exclude_paths : string list) (units : Units.unit_info list) :
+    Units.unit_info list =
+  List.filter
+    (fun u ->
+      (include_tests || not u.Units.utest)
+      && Engine.path_match ~include_paths ~exclude_paths u.Units.ufile)
+    units
+
+let print_groups (gs : group list) : unit =
+  gs
+  |> List.iter (fun g ->
+         let sloc = List.fold_left (fun n i -> max n i.sloc) 0 g.instances in
+         Printf.printf "\n%d instances, %d SLOC (%d duplicated)\n"
+           (List.length g.instances) sloc g.dup_sloc;
+         List.iter
+           (fun i ->
+             Printf.printf "  %s:%d-%d\n" i.file i.first.Tok.pos.Pos.line
+               i.last.Tok.pos.Pos.line)
+           g.instances)
+
 let run ~(include_tests : bool) ~(include_paths : string list)
     ~(exclude_paths : string list) ~min_stmts ~min_lines (paths : string list)
     : unit =
   let units = Units.units_of_paths paths in
   let tests = List.length (List.filter (fun u -> u.Units.utest) units) in
-  let scanned =
-    List.filter
-      (fun u ->
-        (include_tests || not u.Units.utest)
-        && Engine.path_match ~include_paths ~exclude_paths u.Units.ufile)
-      units
-  in
+  let scanned = scanned ~include_tests ~include_paths ~exclude_paths units in
   let gs = groups ~min_stmts ~min_lines scanned in
   Printf.printf
     "block clones: %d group(s), %d duplicated SLOC, from %d units in %d \
@@ -160,13 +179,4 @@ let run ~(include_tests : bool) ~(include_paths : string list)
     min_stmts min_lines
     (if include_tests then ""
      else Printf.sprintf "; skipping %d test units (--tests to include)" tests);
-  gs
-  |> List.iter (fun g ->
-         let sloc = List.fold_left (fun n i -> max n i.sloc) 0 g.instances in
-         Printf.printf "\n%d instances, %d SLOC (%d duplicated)\n"
-           (List.length g.instances) sloc g.dup_sloc;
-         List.iter
-           (fun i ->
-             Printf.printf "  %s:%d-%d\n" i.file i.first.Tok.pos.Pos.line
-               i.last.Tok.pos.Pos.line)
-           g.instances)
+  print_groups gs

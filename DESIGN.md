@@ -282,6 +282,39 @@ binding in-switch; only collision rate matters), 62-bit non-negative ints.
   `family.context=0.5` fuses 2:1 with Base; ida-similarity's 0.5/0.5 is
   `family.context=1`.
 
+- **D18 — Clone classes** (`dupes --classes`, MCP `find_duplicates`
+  `group: true`). Pair lists grow O(n²) in families of near-identical
+  functions (accessors, `as_str` tables); scb-check reports groups and a
+  duplicated share instead. A class is a connected component (union-find)
+  of the pairs that survive the `dupes` filters and score ≥
+  `--class-threshold` on the gated metric (default `-t`, so the pair list
+  never changes). Single linkage chains (A~B, B~C, A≁C), so each class
+  shows its jaccard range over the pairs present and how many of its
+  N(N-1)/2 pairs are present; a tighter class threshold splits the chain.
+  The representative is the member with the highest mean jaccard to the
+  others (absent pairs 0), ties by location. **Duplicated SLOC** is
+  `Units.dup_sloc` (sum minus the largest; blocks share it) over the
+  members not nested in another member: a closure inside a member folds
+  into it (marked `(nested)`). The summary total counts each line once:
+  the members a class would delete (all unfolded ones but the largest),
+  across classes, with those nested in another deleted member dropped, so
+  it can sit below the sum of the per-class figures (marghera -t 0.7: 2,170
+  vs 2,191). The denominator is the code lines of the scanned units, nested
+  ones folded the same way: the indexed units past the side gates (tests,
+  paths), or with `--blocks` every gated unit, indexed or not, since block
+  groups come from all of them. With `--blocks` the summary adds the block
+  groups' duplicated lines (every instance but the largest, by line) that
+  are not inside a function the classes delete, and the union. Marghera
+  (`-t 0.7 --min-lines 3`, no tests): 151 classes, 484 functions, 2,170
+  duplicated SLOC (8.1% of 26,787), largest class the 25 one-line
+  accessors at j 1.000; `--class-threshold 0.9`: 90 classes, 294
+  functions, 1,111 SLOC (the 10-member class splits into three of 3 and
+  drops one member, the 11-member one keeps 9; the accessors stay
+  together, they are identical); `--blocks` adds 132
+  of the 137 block-clone lines, 8.6% in all. The MCP summary's total is
+  the workspace's; with `include_deps` a class can hold dep functions,
+  whose lines then count as duplicated too.
+
 ## Evaluation
 
 Three instruments, in order of authority:
@@ -438,6 +471,7 @@ nonna/
   cli/       (executable)     # main (commands/flags), units (enumeration,
                               # context second pass, D17),
                               # blocks (dupes --blocks, D16),
+                              # clones (dupes --classes, D18),
                               # bench (mine/eval/rank), viz (DOT), corpus (cargo+std),
                               # sigdb (caches), lsp_server, mcp_server
 editor/vscode-nonna/          # minimal LSP client + find-similar + fn-diff

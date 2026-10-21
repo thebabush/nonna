@@ -38,8 +38,9 @@ let is_anonymous (name : string) : bool = name = "<lambda>" || name = "<entity>"
    token. Comments and blank lines carry no tokens, so they never count;
    docstring-shaped statements (a bare string-literal expression statement)
    are excluded explicitly — a function that is one docstring and one return
-   is 2 code lines no matter how long the docstring. *)
-let code_lines_of_body (body : G.stmt) : int =
+   is 2 code lines no matter how long the docstring. These are the lines,
+   ascending; [code_lines_of_body] counts them. *)
+let code_line_set_of_body (body : G.stmt) : int list =
   let pos_of tok =
     match Tok.loc_of_tok tok with
     | Ok l -> Some (l.Tok.pos.Pos.line, l.Tok.pos.Pos.bytepos)
@@ -70,7 +71,16 @@ let code_lines_of_body (body : G.stmt) : int =
          | Some ((line, _) as p) ->
              if not (Hashtbl.mem doc_pos p) then Hashtbl.replace lines line ()
          | None -> ());
-  Hashtbl.length lines
+  Hashtbl.fold (fun l () acc -> l :: acc) lines [] |> List.sort compare
+
+let code_lines_of_body (body : G.stmt) : int =
+  List.length (code_line_set_of_body body)
+
+(* Duplicated SLOC of a group of copies: the lines you could delete if you
+   kept one copy, the largest (sum minus max). Block groups (D16) and clone
+   classes (D18) both report it. *)
+let dup_sloc (slocs : int list) : int =
+  List.fold_left ( + ) 0 slocs - List.fold_left max 0 slocs
 
 (* ── OCaml IL normalization (D-ocaml) ─────────────────────────────────────
    opengrep parses OCaml but its AST_to_IL leaves function bodies un-lowered:

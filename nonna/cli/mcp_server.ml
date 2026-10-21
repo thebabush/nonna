@@ -484,6 +484,10 @@ let find_duplicates (args : J.t) : J.t =
     let include_tests =
       Option.value (bool_arg args "include_tests") ~default:false
     in
+    (* group:true lists clone classes (D18): every pair feeds them, and
+       limit caps the classes listed instead *)
+    let group = Option.value (bool_arg args "group") ~default:false in
+    let limit = Option.value (int_arg args "limit") ~default:50 in
     let flt =
       {
         Engine.threshold =
@@ -495,7 +499,7 @@ let find_duplicates (args : J.t) : J.t =
         exclude_paths = str_list_arg args "exclude";
         min_lines = Option.value (int_arg args "min_lines") ~default:0;
         min_features = Option.value (int_arg args "min_features") ~default:0;
-        limit = Option.value (int_arg args "limit") ~default:50;
+        limit = (if group then 0 else limit);
         scope_a = !workspace_fns;
         scope_b = (if include_deps then 0 else !workspace_fns);
         include_tests;
@@ -534,7 +538,33 @@ let find_duplicates (args : J.t) : J.t =
            functions. Narrow it (include/name/min_lines) or raise time_budget_s."
           budget scan.Engine.scanned scan.Engine.total
     in
-    if pairs = [] then
+    if group then
+      let cs =
+        Clones.classes ~threshold:flt.Engine.threshold ~by_max:flt.Engine.by_max
+          pairs
+      in
+      (* the line total covers the workspace fns the scan's side gates pass *)
+      let scanned =
+        List.init !workspace_fns (Engine.get_meta !engine)
+        |> List.filter (fun (m : Engine.meta) ->
+               (include_tests || not m.Engine.is_test)
+               && Engine.path_match ~include_paths:flt.Engine.include_paths
+                    ~exclude_paths:flt.Engine.exclude_paths m.Engine.file)
+      in
+      let shown = if limit > 0 then List.filteri (fun i _ -> i < limit) cs else cs in
+      tool_text
+        (Printf.sprintf "%s, %s.%s%s%s" (Clones.summary cs ~scanned) scope_desc
+           (if List.length shown < List.length cs then
+              Printf.sprintf " Showing the first %d classes (limit)."
+                (List.length shown)
+            else "")
+           (String.concat ""
+              (List.mapi
+                 (fun k c ->
+                   "\n\n" ^ String.concat "\n" (Clones.render ~expand:false (k + 1) c))
+                 shown))
+           partial)
+    else if pairs = [] then
       tool_text
         (Printf.sprintf "No duplicate pairs above the given filters, %s.%s"
            scope_desc partial)
@@ -702,7 +732,11 @@ let tool_defs : J.t =
                (the literals setting in .nonna separates most of them); \
                min_lines and min_features drop the one-line closures. Other \
                filters: threshold, metric (max|jaccard), name substring, \
-               include/exclude path substrings, limit, time_budget_s." );
+               include/exclude path substrings, limit, time_budget_s. With \
+               group:true it returns clone classes instead (connected groups \
+               of the pairs, each with its score range, members and \
+               duplicated SLOC) under a summary of the workspace's \
+               duplicated share." );
           ( "inputSchema",
             schema
               [
@@ -725,7 +759,12 @@ let tool_defs : J.t =
                 ("min_features", "integer",
                  "drop pairs whose smaller side has fewer features");
                 ("limit", "integer",
-                 "max pairs returned, jaccard desc (default 50)");
+                 "max pairs returned, jaccard desc (default 50); with group, \
+                  max classes");
+                ("group", "boolean",
+                 "return clone classes (groups of mutually duplicate \
+                  functions, largest duplicated SLOC first) plus a \
+                  duplicated-SLOC summary instead of pairs (default false)");
                 ("include_deps", "boolean",
                  "also match workspace fns against deps/std (default false: \
                   workspace-internal only)");
